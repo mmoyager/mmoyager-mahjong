@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>mmoyager 日本麻将</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<div id="app">
+
+  <header id="topbar">
+    <div class="brand">mmoyager <span>日本麻将</span></div>
+    <div id="round-info">
+      <span id="round-name">东1局</span>
+      <span id="honba">0 本场</span>
+      <span id="sticks">供托 0</span>
+      <span id="wall">余 0</span>
+    </div>
+    <div class="controls">
+      <label>场次
+        <select id="sel-length">
+          <option value="tonpuu">东风战</option>
+          <option value="hanchan">半庄战</option>
+        </select>
+      </label>
+      <label>座位
+        <select id="sel-seat">
+          <option value="0">起家（东）</option>
+          <option value="1">南</option>
+          <option value="2">西</option>
+          <option value="3">北</option>
+        </select>
+      </label>
+      <label>对手
+        <select id="sel-bot">
+          <option value="nn">神经网络 AI（已训练）</option>
+          <option value="efficiency">牌效率 AI</option>
+          <option value="random">随机 AI</option>
+        </select>
+      </label>
+      <button id="btn-new">新对局</button>
+      <button id="btn-hint" title="让基线 AI 给出建议">提示</button>
+      <button id="btn-replays" title="分析已保存的牌谱">牌谱分析</button>
+      <a class="navlink" href="/dashboard" title="查看并控制后台训练">训练控制台</a>
+    </div>
+  </header>
+
+  <main id="table">
+    <!-- opponents are filled in by the client -->
+    <section class="seat seat-top" id="seat-top"></section>
+    <section class="seat seat-left" id="seat-left"></section>
+    <section class="seat seat-right" id="seat-right"></section>
+
+    <section id="center">
+      <div id="center-round">
+        <div id="center-wind">东</div>
+        <div id="center-meta"></div>
+      </div>
+      <div id="dora-box">
+        <div class="label">宝牌指示牌</div>
+        <div id="dora-tiles" class="tiles"></div>
+      </div>
+      <div id="log"></div>
+    </section>
+
+    <section class="seat seat-bottom" id="seat-bottom"></section>
+
+    <section id="hand-area">
+      <div id="melds-self" class="melds"></div>
+      <div id="hand" class="tiles hand"></div>
+      <div id="hand-info">
+        <span id="shanten-info"></span>
+        <span id="furiten-flag" class="flag hidden">振听</span>
+      </div>
+    </section>
+
+    <section id="action-bar"></section>
+  </main>
+
+  <div id="hint-box" class="hidden"></div>
+  <div id="toast" class="hidden"></div>
+
+  <div id="replay-overlay" class="hidden">
+    <div id="replay-card">
+      <div class="replay-head">
+        <h2>牌谱分析</h2>
+        <select id="replay-select"></select>
+        <button id="replay-run">分析</button>
+        <span id="replay-status" class="muted"></span>
+        <button id="replay-close" style="margin-left:auto">关闭</button>
+      </div>
+      <div id="replay-body"></div>
+    </div>
+  </div>
+
+  <div id="overlay" class="hidden">
+    <div id="overlay-card">
+      <h2 id="overlay-title"></h2>
+      <div id="overlay-body"></div>
+      <button id="overlay-close">继续</button>
+    </div>
+  </div>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>

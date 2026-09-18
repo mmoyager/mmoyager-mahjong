@@ -1,0 +1,6 @@
+# This project is built and run on one machine, so let the compiler use the
+# CPU's full instruction set (AVX2 / FMA): network inference is the bottleneck
+# for self-play throughput, and the multi-accumulator dot product below relies
+# on the compiler emitting vector FMAs.
+[build]
+rustflags = ["-C", "target-cpu=native"]

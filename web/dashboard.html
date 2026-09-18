@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>mmoyager 训练控制台</title>
+<link rel="stylesheet" href="/dashboard.css" />
+</head>
+<body>
+<div id="dash">
+
+  <header>
+    <div class="brand">
+      <span class="logo">🀄</span>
+      <div>
+        <h1>训练控制台</h1>
+        <p class="sub">mmoyager 日本麻将 · 后台自我博弈训练</p>
+      </div>
+    </div>
+    <nav>
+      <a class="btn ghost" href="/">← 回到牌桌</a>
+      <button class="btn" id="btn-refresh">立即刷新</button>
+      <label class="toggle"><input type="checkbox" id="auto" checked /> 自动刷新</label>
+    </nav>
+  </header>
+
+  <section class="status-row">
+    <div class="card status" id="card-status">
+      <div class="card-head">
+        <h2>循环状态</h2>
+        <span class="badge" id="run-badge">读取中…</span>
+      </div>
+      <dl class="kv">
+        <div><dt>进程</dt><dd id="k-pids">—</dd></div>
+        <div><dt>当前迭代</dt><dd id="k-iter">—</dd></div>
+        <div><dt>日志静默</dt><dd id="k-quiet">—</dd></div>
+        <div><dt>日志文件</dt><dd id="k-log" class="mono ellipsis">—</dd></div>
+      </dl>
+      <div class="controls">
+        <button class="btn primary" id="btn-start">开始训练</button>
+        <button class="btn" id="btn-restart">重启</button>
+        <button class="btn danger" id="btn-stop">停止</button>
+      </div>
+      <p class="hint" id="ctl-msg"></p>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>当前最优权重</h2></div>
+      <div class="best-name mono" id="k-best">—</div>
+      <div class="metrics">
+        <div class="metric">
+          <span class="metric-value" id="k-abs">—</span>
+          <span class="metric-label">对牌效率 bot v2 的分差</span>
+        </div>
+        <div class="metric">
+          <span class="metric-value" id="k-guard">—</span>
+          <span class="metric-label">对冻结基线 v1 的分差（守卫）</span>
+        </div>
+        <div class="metric">
+          <span class="metric-value" id="k-promos">—</span>
+          <span class="metric-label">历史迭代 / 提升次数</span>
+        </div>
+      </div>
+      <p class="hint">对局服务当前使用的权重由 <span class="mono">data/training_state.json</span> 的 <span class="mono">best</span> 决定。</p>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>迭代趋势</h2>
+      <span class="muted" id="trend-note">每点一次迭代：绿=被采纳为新最优，灰=未过门槛被拒绝，空心=提前停止测量</span>
+    </div>
+    <div id="chart" class="chart"></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>迭代历史</h2>
+      <span class="muted" id="hist-note"></span>
+    </div>
+    <div class="table-wrap">
+      <table class="hist">
+        <thead>
+          <tr>
+            <th>迭代</th><th>配方</th><th>成绩</th><th>副本</th>
+            <th>耗时</th><th>结果</th><th>权重</th><th>备注</th>
+          </tr>
+        </thead>
+        <tbody id="hist-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>实时日志</h2>
+      <span class="muted" id="log-path"></span>
+    </div>
+    <pre id="log" class="log"></pre>
+  </section>
+
+  <section class="card">
+    <div class="card-head"><h2>手动运行</h2></div>
+    <pre class="cmd" id="cmd"></pre>
+    <p class="hint">
+      这个按钮只是把上面这条命令交给后台执行；循环自己会在每一步之后写状态文件，
+      所以在终端里 Ctrl-C 与这里的"停止"等价 —— 都会跑完当前一步再退出，可随时用"开始"接着跑。
+    </p>
+  </section>
+</div>
+<script src="/dashboard.js"></script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+# Build artefacts and environments: reproducible from the sources here.
+/target/
+/.venv/
+**/__pycache__/
+*.pyc
+
+# Training data is far too large for git (tens of gigabytes) and is regenerated
+# by the engine itself, which is also the project's rule: no human game records
+# are ever ingested. `data/selfplay/README.md` explains how to make it.
+/data/selfplay/*
+!/data/selfplay/README.md
+
+# Run logs and dashboards: regenerated on every run.
+/data/logs/*.out
+/data/logs/*.log
+/data/replays/
+
+# Checkpoints: the released model is committed explicitly, everything else is a
+# by-product of the training loop (which keeps its own rollback history).
+/data/checkpoints/*
+!/data/checkpoints/ck-ab.bin
+
+# macOS noise.
+.DS_Store

@@ -1,0 +1,32 @@
+[package]
+name = "mmj-selfplay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "High-throughput self-play experience generation and agent evaluation"
+
+[lib]
+name = "mmj_selfplay"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mmj-selfplay"
+path = "src/main.rs"
+
+[[bin]]
+name = "mmj-eval"
+path = "src/bin/eval.rs"
+
+[[bin]]
+name = "mmj-analyze"
+path = "src/bin/analyze.rs"
+
+[dependencies]
+mmj-core = { workspace = true }
+mmj-ai = { workspace = true }
+mmj-nn = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+rayon = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

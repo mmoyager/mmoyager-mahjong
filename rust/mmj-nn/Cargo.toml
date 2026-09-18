@@ -1,0 +1,11 @@
+[package]
+name = "mmj-nn"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Minimal dependency-free inference for the mahjong policy/value network plus weight file IO"
+
+[dependencies]
+mmj-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

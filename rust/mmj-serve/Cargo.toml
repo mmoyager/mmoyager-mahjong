@@ -1,0 +1,22 @@
+[package]
+name = "mmj-serve"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Local web server: play against bots, inspect replays, run analysis"
+
+[[bin]]
+name = "mmj-serve"
+path = "src/main.rs"
+
+[dependencies]
+mmj-core = { workspace = true }
+mmj-ai = { workspace = true }
+mmj-nn = { workspace = true }
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
+futures-util = "0.3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }

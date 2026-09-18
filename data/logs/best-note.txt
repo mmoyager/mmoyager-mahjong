@@ -1,0 +1,1 @@
+best = ck-tr.bin (737-dim, teacher ranking feature, val_acc 0.969)
