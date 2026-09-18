@@ -233,10 +233,21 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
 
 /* ---------- overlays ---------- */
 #hint-box {
-  position: fixed; right: 16px; bottom: 16px; max-width: 320px; white-space: pre-wrap;
-  background: #08281a; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
-  font-size: 13px; line-height: 1.6; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); z-index: 20;
+  position: fixed; right: 16px; bottom: 16px; width: 330px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(0,0,0,0.15)), #08281a;
+  border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
+  font-size: 13px; line-height: 1.6; box-shadow: 0 12px 34px rgba(0, 0, 0, 0.55); z-index: 20;
 }
+.hint-title { font-weight: 700; color: var(--gold); margin-bottom: 8px; }
+.hint-sec { border-top: 1px dashed rgba(255,255,255,0.1); padding: 8px 0 2px; color: var(--muted); }
+.hint-head { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; margin-bottom: 6px; }
+.hint-row { display: grid; grid-template-columns: 1fr 90px 44px; gap: 6px; align-items: center; font-size: 12px; }
+.hint-row .hint-label { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hint-row .hint-bar { height: 6px; border-radius: 3px; background: #2f7d55; display: block; }
+.hint-row.best .hint-bar { background: var(--gold); }
+.hint-row .hint-pct { text-align: right; color: var(--muted); }
+.hint-foot { margin-top: 6px; font-size: 11px; color: var(--muted); }
+.hint-close { margin-top: 10px; width: 100%; }
 #toast {
   position: fixed; left: 50%; top: 60px; transform: translateX(-50%);
   background: #4a1414; border: 1px solid #a33; border-radius: 8px; padding: 8px 14px;

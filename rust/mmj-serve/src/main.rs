@@ -425,8 +425,15 @@ impl Session {
     }
 }
 
-/// A hint request: what the baseline agent would play, and why.
-fn hint_message(session: &Session) -> Value {
+/// A hint request: what the network would play (with its own probabilities),
+/// what the tile-efficiency baseline would play, and the hand's shape.
+///
+/// The two opinions are shown side by side because they disagree often and the
+/// disagreement is the interesting part: the network is what the project actually
+/// trained, the baseline is the yardstick every strength number is quoted
+/// against. The value estimate carries an explicit caveat, because the honest
+/// R² of that head is about 0.11.
+fn hint_message(session: &Session, checkpoints: &CheckpointSource) -> Value {
     let seat = session.human;
     let Some(d) = session
         .table
@@ -442,6 +449,33 @@ fn hint_message(session: &Session) -> Value {
     let player = &session.table.players[seat as usize];
     let melds = player.melds.len() as u8;
     let mut text = format!("推荐：{}", action.label());
+
+    // What the trained network makes of the same position.
+    let net_report = match checkpoints.resolve() {
+        Some(path) => match NnAgent::from_checkpoint_labeled(&path, 7, false, None) {
+            Ok(mut nn) => {
+                let (dist, value) = nn.evaluate(&session.table, seat, &d);
+                let mut ranked: Vec<(String, f32)> = dist
+                    .iter()
+                    .map(|(a, p)| (a.label(), *p))
+                    .collect();
+                ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                ranked.truncate(5);
+                json!({
+                    "checkpoint": path.file_name().map(|n| n.to_string_lossy().to_string()),
+                    "value": value,
+                    "top": ranked
+                        .iter()
+                        .map(|(label, p)| json!({ "label": label, "prob": p }))
+                        .collect::<Vec<_>>(),
+                })
+            }
+            Err(e) => json!({ "error": e.to_string() }),
+        },
+        None => Value::Null,
+    };
+
+    let mut shape = Value::Null;
     if let Action::Discard { tile, .. } = action {
         let k = mmj_core::tile::kind_of(tile);
         let mut rest = player.hand;
@@ -463,8 +497,21 @@ fn hint_message(session: &Session) -> Value {
         if !detail.is_empty() {
             text.push_str(&format!("\n听牌：{}", detail.trim_end()));
         }
+        shape = json!({
+            "before": before,
+            "after": after,
+            "ukeire": uke,
+            "waits": detail.trim_end(),
+        });
     }
-    json!({ "type": "hint", "text": text })
+    json!({
+        "type": "hint",
+        "text": text,
+        "shape": shape,
+        "baseline": action.label(),
+        "net": net_report,
+        "caveat": "价值头的真实拟合度只有 R²≈0.11（预测标准差约目标的 36%），期望得失只能当方向参考。",
+    })
 }
 
 #[derive(Deserialize)]
@@ -577,7 +624,7 @@ async fn handle_socket(socket: WebSocket, checkpoints: CheckpointSource) {
             }
             ClientMsg::Hint => {
                 let Some(s) = session.as_ref() else { continue };
-                let h = hint_message(s);
+                let h = hint_message(s, &checkpoints);
                 send_json!(h);
             }
         }

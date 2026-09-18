@@ -160,7 +160,7 @@ function handle(msg) {
       showGameEnd(msg);
       break;
     case "hint":
-      showHint(msg.text);
+      showHint(msg);
       break;
     case "error":
       toast(msg.message);
@@ -337,6 +337,20 @@ function renderHand(view, human) {
   document.getElementById("furiten-flag").classList.toggle("hidden", !me.furiten);
 }
 
+/// Turn the riichi declaration on or off, refusing when the engine has not
+/// offered one (the button is only rendered when it has, but the keyboard
+/// shortcut can be pressed at any time).
+function toggleRiichi() {
+  if (!state || !state.decision) return;
+  const acts = state.decision.actions || [];
+  if (!acts.some((a) => a.Discard && a.Discard.riichi)) {
+    toast("现在不能立直");
+    return;
+  }
+  riichiMode = !riichiMode;
+  render();
+}
+
 function findDiscardAction(tile, wantRiichi) {
   if (!state || !state.decision) return null;
   const acts = state.decision.actions || [];
@@ -397,10 +411,7 @@ function renderActions() {
     const b = document.createElement("button");
     b.textContent = riichiMode ? "立直中（点击手牌）" : "立直";
     b.className = "riichi-toggle" + (riichiMode ? " on" : "");
-    b.addEventListener("click", () => {
-      riichiMode = !riichiMode;
-      render();
-    });
+    b.addEventListener("click", toggleRiichi);
     bar.appendChild(b);
   }
 
@@ -525,12 +536,82 @@ function overlay(title, bodyHtml) {
   document.getElementById("overlay").classList.remove("hidden");
 }
 
-function showHint(text) {
+// The hint panel shows three things at once: the network's own ranking with its
+// probabilities, the tile-efficiency baseline's pick, and the hand's shape. They
+// disagree often, and seeing both is more useful than being told one answer.
+function showHint(msg) {
   const box = document.getElementById("hint-box");
-  box.textContent = text;
+  box.innerHTML = "";
+
+  const title = document.createElement("div");
+  title.className = "hint-title";
+  title.textContent = msg.text ? msg.text.split("\n")[0] : "提示";
+  box.appendChild(title);
+
+  const net = msg.net;
+  if (net && net.top && net.top.length) {
+    const sec = document.createElement("div");
+    sec.className = "hint-sec";
+    const h = document.createElement("div");
+    h.className = "hint-head";
+    h.innerHTML = '<span>神经网络</span><span class="mono">' + (net.checkpoint || "") + "</span>";
+    sec.appendChild(h);
+    const best = net.top[0].prob || 1;
+    net.top.forEach((row) => {
+      const line = document.createElement("div");
+      line.className = "hint-row" + (row === net.top[0] ? " best" : "");
+      const bar = document.createElement("span");
+      bar.className = "hint-bar";
+      bar.style.width = Math.max(4, Math.round((row.prob / best) * 100)) + "%";
+      const label = document.createElement("span");
+      label.className = "hint-label";
+      label.textContent = row.label;
+      const pct = document.createElement("span");
+      pct.className = "hint-pct mono";
+      pct.textContent = (row.prob * 100).toFixed(1) + "%";
+      line.appendChild(label);
+      line.appendChild(bar);
+      line.appendChild(pct);
+      sec.appendChild(line);
+    });
+    if (typeof net.value === "number") {
+      const v = document.createElement("div");
+      v.className = "hint-foot";
+      v.textContent = "期望得失 ≈ " + (net.value > 0 ? "+" : "") + Math.round(net.value) +
+        " 分（价值头 R²≈0.11，只看方向）";
+      sec.appendChild(v);
+    }
+    box.appendChild(sec);
+  } else if (net && net.error) {
+    const sec = document.createElement("div");
+    sec.className = "hint-sec muted";
+    sec.textContent = "神经网络不可用：" + net.error;
+    box.appendChild(sec);
+  }
+
+  if (msg.shape) {
+    const sec = document.createElement("div");
+    sec.className = "hint-sec";
+    let line = "向听 " + msg.shape.before + " → " + msg.shape.after + "，进张 " + msg.shape.ukeire + " 张";
+    if (msg.shape.waits) line += "，听：" + msg.shape.waits;
+    sec.textContent = line;
+    box.appendChild(sec);
+  } else if (msg.text) {
+    const sec = document.createElement("div");
+    sec.className = "hint-sec";
+    sec.textContent = msg.text.split("\n").slice(1).join("  ");
+    box.appendChild(sec);
+  }
+
+  const close = document.createElement("button");
+  close.className = "hint-close";
+  close.textContent = "关闭";
+  close.addEventListener("click", () => box.classList.add("hidden"));
+  box.appendChild(close);
+
   box.classList.remove("hidden");
   clearTimeout(box._timer);
-  box._timer = setTimeout(() => box.classList.add("hidden"), 12000);
+  box._timer = setTimeout(() => box.classList.add("hidden"), 16000);
 }
 
 function toast(text) {
@@ -712,5 +793,35 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("overlay-close").addEventListener("click", () => {
     document.getElementById("overlay").classList.add("hidden");
   });
+
+  // Keyboard play, because clicking fourteen tiles with a mouse is worse than it
+  // sounds: Enter discards the tile you drew, R toggles the riichi declaration,
+  // H asks for a hint, N starts a new hand and Esc closes whatever is open.
+  document.addEventListener("keydown", (ev) => {
+    if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+    const tag = (ev.target && ev.target.tagName) || "";
+    if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+    const key = ev.key.toLowerCase();
+    if (key === "enter") {
+      ev.preventDefault();
+      const me = state && state.view && state.view.players ? state.view.players[state.human] : null;
+      if (me && me.drawn !== null && me.drawn !== undefined) {
+        const act = findDiscardAction(me.drawn, riichiMode);
+        if (act) { riichiMode = false; send({ type: "action", action: act }); }
+        else toast("摸到的这张现在不能打");
+      }
+    } else if (key === "r") {
+      toggleRiichi();
+    } else if (key === "h") {
+      send({ type: "hint" });
+    } else if (key === "n") {
+      document.getElementById("btn-new").click();
+    } else if (key === "escape") {
+      document.getElementById("hint-box").classList.add("hidden");
+      document.getElementById("overlay").classList.add("hidden");
+      document.getElementById("replay-overlay").classList.add("hidden");
+    }
+  });
+
   connect();
 });

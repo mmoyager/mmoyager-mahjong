@@ -752,6 +752,7 @@ pub fn ukeire_count(counts: &Counts, melds: u8, visible: &Counts) -> u32 {
 #[cfg(test)]
 mod tests {
 
+
     /// The shape caches must not confuse a fifth copy with a different pattern.
     ///
     /// `tenpai_kinds` and `ukeire_count` deliberately add a tile to a count

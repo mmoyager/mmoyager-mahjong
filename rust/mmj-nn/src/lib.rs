@@ -64,20 +64,13 @@ const YAKU_AFTER: usize = NUM_KINDS;
 const TEACHER_RANK: usize = NUM_KINDS;
 /// Decision context: trigger kind (3), called tile (34), relative discarder (4).
 const DECISION_BLOCK: usize = 3 + NUM_KINDS + 4;
-/// Threat reads (round 31): for each of the three opponents, how many discards
-/// they have made *since declaring riichi* split by suit (man, pin, sou,
-/// honours) plus how many discards that is (5 per opponent = 15), and the same
-/// turn count for oneself (1).
-///
-/// The per-player block above counts discards cumulatively, which cannot tell an
-/// early throw from one made after a declaration -- and that split is precisely
-/// the classical defence read ("they are not collecting pin, so a pin wait is
-/// likely"). The hand-crafted version of this read lives in
-/// `mmj_core::danger`, but only as a modification of the danger values, so the
-/// network has never been able to see the raw evidence. The teacher's labels do
-/// reflect it (its own danger call enables the read), which is another reason the
-/// network benefits from seeing it.
-const THREAT_READ: usize = 3 * 5 + 1;
+// Round 31 appended a "threat read" block here (what a riichi player has thrown
+// since declaring, 16 features, 737 -> 753). It measured *worse* than the
+// baseline both against the rule bot (+16 ± 54 is zero, and the paired comparison
+// against a zero-block control arm was −72.8 ± 72) and was not adopted, so the
+// encoder is back to 737 dimensions and the block is gone rather than left in the
+// tree: a build with it silently produces data the served lineage cannot train
+// on. See docs/TRAINING.md section 42.
 
 /// Total number of input features. See [`encode`] for the layout.
 pub const FEATURE_DIM: usize = SELF_BLOCK
@@ -95,8 +88,7 @@ pub const FEATURE_DIM: usize = SELF_BLOCK
     + DANGER
     + YAKU_AFTER
     + TEACHER_RANK
-    + DECISION_BLOCK
-    + THREAT_READ;
+    + DECISION_BLOCK;
 
 /// Meld type counters inside each per-player block.
 const MELD_TYPES: [MeldKind; 5] = [
@@ -516,45 +508,6 @@ pub fn encode_state(
     let rel_from = (from + 4 - seat) % 4;
     for r in 0..4 {
         push(if r == rel_from { 1.0 } else { 0.0 });
-    }
-
-    // ---- threat reads ----
-    //
-    // Read each opponent's discard list in order and split it at their riichi
-    // declaration: the tiles thrown *after* declaring are the evidence a
-    // defender reasons from. The counters are raw (no hand-tuned weighting) so
-    // the network can learn its own read; the same turned into "turns since the
-    // declaration" for the three opponents and for oneself.
-    for rel in 1..4usize {
-        let other = &table.players[(seat as usize + rel) % 4];
-        let mut since = [0.0f32; 4];
-        let mut turns = 0.0f32;
-        let mut declared = false;
-        for d in other.discards.iter() {
-            if d.riichi {
-                declared = true;
-                continue;
-            }
-            if !declared {
-                continue;
-            }
-            turns += 1.0;
-            let k = kind_of(d.tile);
-            let slot = if is_honor(k) { 3 } else { (k / 9) as usize };
-            since[slot] += 1.0;
-        }
-        push((turns / 12.0).clamp(0.0, 1.0));
-        for v in since {
-            push((v / 8.0).clamp(0.0, 1.0));
-        }
-    }
-    {
-        let turns_since_riichi = if me.riichi {
-            me.discards.iter().rev().take_while(|d| !d.riichi).count() as f32
-        } else {
-            0.0
-        };
-        push((turns_since_riichi / 12.0).clamp(0.0, 1.0));
     }
 
     debug_assert_eq!(at, FEATURE_DIM, "feature layout drifted");
