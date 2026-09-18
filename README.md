@@ -98,6 +98,12 @@ data/                 权重、经验数据、牌谱、日志（不入版本库�
 
 ---
 
+> **仓库包含什么**：源码（`rust/`、`python/`、`web/`）、文档（`docs/`）、
+> 每轮实验的脚本（`data/logs/*.sh`）、训练历史（`data/training_state.json`）
+> 与两个参考权重（`ck-ab.bin`、`ck-v9.bin`），合计约 11 MB。
+> **训练数据不在仓库里**（几十 GB，且按项目规则完全由引擎自我生成，不录入人类牌谱）——
+> 重建方法见 `data/selfplay/README.md`。发布到 GitHub：先 `gh auth login`，再 `scripts/publish.sh`。
+
 > **想快速了解结论**：`docs/FINDINGS.md` 把 39 轮的实测浓缩成一页 ——
 > 现在什么水平、哪些手段有效（含效应量）、哪些方向已被同批多副本测量证伪、为什么到顶了，
 > 以及"怎么跑、怎么测"的操作手册与测量纪律。
