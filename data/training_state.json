@@ -1,5 +1,5 @@
 {
-  "iteration": 66,
+  "iteration": 70,
   "base": "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-ab.bin",
   "best": "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-ab.bin",
   "best_score": 0.0,
@@ -1610,17 +1610,133 @@
       "vs_previous": null,
       "best": "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-ab.bin",
       "best_score": 0.0
+    },
+    {
+      "iteration": 67,
+      "recipe": "region-noanchor",
+      "anchor": false,
+      "replica_scores": [
+        41.2
+      ],
+      "margin2": null,
+      "partial": false,
+      "group_mean": 41.2,
+      "checkpoint": "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-0067.bin",
+      "seconds": 1162.8,
+      "vs_efficiency": {
+        "a": "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-0067.bin",
+        "avg_a": 25020.604166666668,
+        "avg_b": 24979.395833333332,
+        "avg_rank_a": 2.4892,
+        "b": "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-ab.bin",
+        "first_rate_a": 0.5097916666666666,
+        "games": 9600,
+        "rounds": 29955,
+        "uma_a": 15.11,
+        "wins_a": 10833,
+        "wins_b": 10750
+      },
+      "vs_previous": null,
+      "best": "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-ab.bin",
+      "best_score": 0.0
+    },
+    {
+      "iteration": 68,
+      "recipe": "region-sh2",
+      "anchor": true,
+      "replica_scores": [
+        -4.6
+      ],
+      "margin2": null,
+      "partial": false,
+      "group_mean": -4.6,
+      "checkpoint": "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-0068.bin",
+      "seconds": 556.5,
+      "vs_efficiency": {
+        "a": "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-0068.bin",
+        "avg_a": 24997.682291666664,
+        "avg_b": 25002.317708333336,
+        "avg_rank_a": 2.4853,
+        "b": "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-ab.bin",
+        "first_rate_a": 0.5104166666666666,
+        "games": 9600,
+        "rounds": 29955,
+        "uma_a": 15.15,
+        "wins_a": 10789,
+        "wins_b": 10722
+      },
+      "vs_previous": null,
+      "best": "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-ab.bin",
+      "best_score": 0.0
+    },
+    {
+      "iteration": 69,
+      "recipe": "region-sh3",
+      "anchor": false,
+      "replica_scores": [
+        -68.1
+      ],
+      "margin2": null,
+      "partial": false,
+      "group_mean": -68.1,
+      "checkpoint": "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-0069.bin",
+      "seconds": 488.9,
+      "vs_efficiency": {
+        "a": "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-0069.bin",
+        "avg_a": 24965.9375,
+        "avg_b": 25034.0625,
+        "avg_rank_a": 2.4936,
+        "b": "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-ab.bin",
+        "first_rate_a": 0.50375,
+        "games": 9600,
+        "rounds": 29923,
+        "uma_a": 15.06,
+        "wins_a": 10706,
+        "wins_b": 10793
+      },
+      "vs_previous": null,
+      "best": "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-ab.bin",
+      "best_score": 0.0
+    },
+    {
+      "iteration": 70,
+      "recipe": "full-dagger",
+      "anchor": true,
+      "replica_scores": [
+        -48.4
+      ],
+      "margin2": null,
+      "partial": false,
+      "group_mean": -48.4,
+      "checkpoint": "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-0070.bin",
+      "seconds": 781.3,
+      "vs_efficiency": {
+        "a": "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-0070.bin",
+        "avg_a": 24975.791666666664,
+        "avg_b": 25024.208333333336,
+        "avg_rank_a": 2.4914,
+        "b": "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-ab.bin",
+        "first_rate_a": 0.50375,
+        "games": 9600,
+        "rounds": 29901,
+        "uma_a": 15.09,
+        "wins_a": 10728,
+        "wins_b": 10721
+      },
+      "vs_previous": null,
+      "best": "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-ab.bin",
+      "best_score": 0.0
     }
   ],
   "data_files": [
-    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0063.bin",
-    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0063-mixed.bin",
-    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0064.bin",
-    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0064-mixed.bin",
-    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0065.bin",
-    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0065-mixed.bin",
-    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0066.bin",
-    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0066-mixed.bin"
+    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0067.bin",
+    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0067-mixed.bin",
+    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0068.bin",
+    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0068-mixed.bin",
+    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0069.bin",
+    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0069-mixed.bin",
+    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0070.bin",
+    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0070-mixed.bin"
   ],
   "checkpoints": [
     "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-best.bin",
@@ -1672,7 +1788,11 @@
     "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-0063.bin",
     "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-0064.bin",
     "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-0065.bin",
-    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-0066.bin"
+    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-0066.bin",
+    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-0067.bin",
+    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-0068.bin",
+    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-0069.bin",
+    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-0070.bin"
   ],
   "eval_games": 9600,
   "confirm_offset": 0,
@@ -1688,7 +1808,7 @@
     "efficiency": 1992.9
   },
   "absolute_anchor": {
-    "iteration": 65,
+    "iteration": 70,
     "checkpoint": "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-ab.bin",
     "avg": 25153.552083333332,
     "margin": 307.10416666666424

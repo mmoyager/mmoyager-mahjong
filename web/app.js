@@ -35,6 +35,7 @@ let state = null;
 let botNames = ["你", "AI", "AI", "AI"];
 let riichiMode = false;
 let logs = [];
+let deltaScores = null;
 let lastRoundSeen = -1;
 
 // ---------------------------------------------------------------- utilities
@@ -55,12 +56,20 @@ function tileName(tile) {
   return f.suit === "z" ? f.text : f.text + f.suit;
 }
 
-// The tile faces are drawn with CSS rather than images: 萬 shows its numeral over
-// 萬, 筒 is that many dots, 索 that many bamboo sticks, and the honours carry
-// their own character. Drawn this way they stay crisp at any size, need no
-// assets, and scale from a 26 px pond tile to a 52 px hand tile from one set of
-// rules.
-const NUMERAL = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九"];
+// Tile faces are the public-domain SVG set by FluffyStuff
+// (https://github.com/FluffyStuff/riichi-mahjong-tiles, CC0), served from
+// web/tiles/. They are vector, so one file serves the 22 px pond tile and the
+// 62 px hand tile. A text face is kept as a fallback so the table still reads if
+// an image ever fails to load.
+const HONOR_FILES = ["Ton", "Nan", "Shaa", "Pei", "Haku", "Hatsu", "Chun"];
+
+function tileFile(tile) {
+  const k = kindOf(tile);
+  if (k >= 27) return HONOR_FILES[k - 27];
+  const suit = k < 9 ? "Man" : k < 18 ? "Pin" : "Sou";
+  const n = (k % 9) + 1;
+  return suit + n + (isAka(tile) ? "-Dora" : "");
+}
 
 function tileEl(tile, opts = {}) {
   const k = kindOf(tile);
@@ -74,33 +83,39 @@ function tileEl(tile, opts = {}) {
     + (opts.extra ? " " + opts.extra : "");
   el.dataset.kind = String(k);
 
-  const face = document.createElement("span");
-  face.className = "face";
-
-  if (k >= 27) {
-    face.classList.add("honor", "h" + k);
-    face.textContent = HONOR_FACE[k];
-  } else {
-    const suit = k < 9 ? "m" : k < 18 ? "p" : "s";
-    const n = (k % 9) + 1;
-    face.classList.add(suit);
-    if (suit === "m") {
-      // 萬: the numeral above the character, as on a real tile.
-      face.innerHTML = '<span class="num">' + NUMERAL[n] + '</span><span class="kanji">萬</span>';
-    } else {
-      // 筒 (dots) and 索 (bamboo) are drawn as repeated marks; the container
-      // arranges them, and a single mark gets its own larger style in CSS.
-      const marks = new Array(n).fill("<i></i>").join("");
-      face.innerHTML = '<span class="' + (suit === "p" ? "pips" : "sticks") +
-        '" data-n="' + n + '">' + marks + "</span>";
-    }
-  }
-  el.appendChild(face);
+  const img = document.createElement("img");
+  img.className = "tile-img";
+  img.alt = tileName(tile);
+  img.draggable = false;
+  img.src = "/tiles/" + tileFile(tile) + ".svg";
+  img.addEventListener("error", () => {
+    // Keep the table readable without the asset: fall back to a text face.
+    el.classList.add("no-asset");
+    img.remove();
+    el.appendChild(textFace(k));
+  });
+  el.appendChild(img);
 
   if (opts.onClick && !opts.disabled) {
     el.addEventListener("click", opts.onClick);
   }
   return el;
+}
+
+/// The fallback face, used only when a tile image cannot be loaded.
+function textFace(k) {
+  const face = document.createElement("span");
+  face.className = "face";
+  if (k >= 27) {
+    face.classList.add("honor");
+    face.textContent = HONOR_FACE[k];
+  } else {
+    const suit = k < 9 ? "m" : k < 18 ? "p" : "s";
+    const n = (k % 9) + 1;
+    face.classList.add(suit);
+    face.textContent = suit === "m" ? NUMERAL[n] + "萬" : String(n) + suit;
+  }
+  return face;
 }
 
 // Opponents' hands: a row of tile backs. Kept separate from `tileEl` because a
@@ -111,6 +126,11 @@ function backRow(count, opts = {}) {
   for (let i = 0; i < Math.max(0, count); i++) {
     const b = document.createElement("div");
     b.className = "back" + (opts.small ? " small" : "");
+    const img = document.createElement("img");
+    img.src = "/tiles/Back.svg";
+    img.alt = "";
+    img.draggable = false;
+    b.appendChild(img);
     wrap.appendChild(b);
   }
   return wrap;
@@ -172,10 +192,28 @@ function handle(msg) {
 
 // ---------------------------------------------------------------- rendering
 
+// Scores as of the previous render, so a round result can be shown as a delta
+// rather than a jump.
+let lastScores = null;
+let lastRoundKey = null;
+
 function render() {
   if (!state) return;
   const view = state.view;
   const human = state.human;
+  const roundKey = view.round_wind + ":" + view.round_number + ":" + view.honba;
+  if (lastRoundKey !== null && roundKey !== lastRoundKey && lastScores) {
+    // A round just ended: keep the deltas on screen for a few seconds.
+    deltaScores = view.players.map((p, i) => p.score - (lastScores[i] ?? p.score));
+    setTimeout(() => { deltaScores = null; render(); }, 6000);
+  }
+  if (lastScores) {
+    view.players.forEach((p, i) => {
+      if (deltaScores && deltaScores[i] === 0) deltaScores[i] = 0;
+    });
+  }
+  lastScores = view.players.map((p) => p.score);
+  lastRoundKey = roundKey;
 
   document.getElementById("round-name").textContent =
     (ROUND_WIND_FACE[view.round_wind] || "?") + view.round_number + "局";
@@ -185,6 +223,19 @@ function render() {
   document.getElementById("center-wind").textContent = ROUND_WIND_FACE[view.round_wind] || "?";
   document.getElementById("center-meta").textContent =
     `${view.round_number}局 ${view.honba}本场 · 剩余 ${view.wall_remaining} 张`;
+  const stickBox = document.getElementById("stick-box");
+  stickBox.innerHTML = "";
+  for (let i = 0; i < Math.min(view.riichi_sticks, 12); i++) {
+    const st = document.createElement("span");
+    st.className = "riichi-stick";
+    stickBox.appendChild(st);
+  }
+  if (view.riichi_sticks > 12) {
+    const more = document.createElement("span");
+    more.className = "stick-more";
+    more.textContent = "+" + (view.riichi_sticks - 12);
+    stickBox.appendChild(more);
+  }
 
   const doraBox = document.getElementById("dora-tiles");
   doraBox.innerHTML = "";
@@ -193,10 +244,12 @@ function render() {
   // Relative seat: 0 self, 1 right (plays next), 2 across, 3 left.
   const rel = (s) => (s - human + 4) % 4;
   const slotFor = { 0: "seat-bottom", 1: "seat-right", 2: "seat-top", 3: "seat-left" };
+  const actingSeat = view.phase && view.phase.Turn ? view.phase.Turn.seat : -1;
   for (let s = 0; s < 4; s++) {
     const p = view.players[s];
     const slot = document.getElementById(slotFor[rel(s)]);
     if (!slot) continue;
+    slot.classList.toggle("turn", s === actingSeat);
     if (rel(s) === 0) { renderSelf(slot, p, view); continue; }
     renderOpponent(slot, p, view, rel(s));
   }
@@ -206,9 +259,11 @@ function render() {
 
 function seatHead(p, view) {
   const head = document.createElement("div");
+  const acting = view.phase && view.phase.Turn && view.phase.Turn.seat === p.seat;
   head.className = "seat-head"
     + (p.is_dealer ? " dealer" : "")
-    + (p.riichi ? " riichi" : "");
+    + (p.riichi ? " riichi" : "")
+    + (acting ? " acting" : "");
   const wind = document.createElement("span");
   wind.className = "wind";
   wind.textContent = WIND_FACE[p.wind] || "?";
@@ -226,6 +281,13 @@ function seatHead(p, view) {
   const score = document.createElement("span");
   score.className = "score";
   score.textContent = p.score;
+  if (deltaScores && deltaScores[p.seat]) {
+    const d = document.createElement("span");
+    d.className = "delta " + (deltaScores[p.seat] > 0 ? "up" : "down");
+    d.textContent = (deltaScores[p.seat] > 0 ? "+" : "") + deltaScores[p.seat];
+    score.textContent = p.score + " ";
+    score.appendChild(d);
+  }
   head.appendChild(score);
   return head;
 }
@@ -783,6 +845,11 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   document.getElementById("btn-hint").addEventListener("click", () => send({ type: "hint" }));
   document.getElementById("btn-replays").addEventListener("click", openReplayPanel);
+  document.getElementById("log-toggle").addEventListener("click", () => {
+    const log = document.getElementById("log");
+    const collapsed = log.classList.toggle("collapsed");
+    document.getElementById("log-toggle").textContent = collapsed ? "展开" : "收起";
+  });
   document.getElementById("replay-close").addEventListener("click", () => {
     document.getElementById("replay-overlay").classList.add("hidden");
   });

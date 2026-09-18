@@ -28,6 +28,51 @@ const STYLE_CSS: &str = include_str!("../../../web/style.css");
 const DASHBOARD_HTML: &str = include_str!("../../../web/dashboard.html");
 const DASHBOARD_JS: &str = include_str!("../../../web/dashboard.js");
 const DASHBOARD_CSS: &str = include_str!("../../../web/dashboard.css");
+/// The public-domain tile artwork, embedded one file at a time so the binary
+/// stays self-contained. Kept as a table rather than a directory scan because
+/// `include_bytes!` needs a literal path.
+const TILE_SVGS: &[(&str, &[u8])] = &[
+    ("Back.svg", include_bytes!("../../../web/tiles/Back.svg")),
+    ("Front.svg", include_bytes!("../../../web/tiles/Front.svg")),
+    ("Blank.svg", include_bytes!("../../../web/tiles/Blank.svg")),
+    ("Ton.svg", include_bytes!("../../../web/tiles/Ton.svg")),
+    ("Nan.svg", include_bytes!("../../../web/tiles/Nan.svg")),
+    ("Shaa.svg", include_bytes!("../../../web/tiles/Shaa.svg")),
+    ("Pei.svg", include_bytes!("../../../web/tiles/Pei.svg")),
+    ("Haku.svg", include_bytes!("../../../web/tiles/Haku.svg")),
+    ("Hatsu.svg", include_bytes!("../../../web/tiles/Hatsu.svg")),
+    ("Chun.svg", include_bytes!("../../../web/tiles/Chun.svg")),
+    ("Man1.svg", include_bytes!("../../../web/tiles/Man1.svg")),
+    ("Man2.svg", include_bytes!("../../../web/tiles/Man2.svg")),
+    ("Man3.svg", include_bytes!("../../../web/tiles/Man3.svg")),
+    ("Man4.svg", include_bytes!("../../../web/tiles/Man4.svg")),
+    ("Man5.svg", include_bytes!("../../../web/tiles/Man5.svg")),
+    ("Man5-Dora.svg", include_bytes!("../../../web/tiles/Man5-Dora.svg")),
+    ("Man6.svg", include_bytes!("../../../web/tiles/Man6.svg")),
+    ("Man7.svg", include_bytes!("../../../web/tiles/Man7.svg")),
+    ("Man8.svg", include_bytes!("../../../web/tiles/Man8.svg")),
+    ("Man9.svg", include_bytes!("../../../web/tiles/Man9.svg")),
+    ("Pin1.svg", include_bytes!("../../../web/tiles/Pin1.svg")),
+    ("Pin2.svg", include_bytes!("../../../web/tiles/Pin2.svg")),
+    ("Pin3.svg", include_bytes!("../../../web/tiles/Pin3.svg")),
+    ("Pin4.svg", include_bytes!("../../../web/tiles/Pin4.svg")),
+    ("Pin5.svg", include_bytes!("../../../web/tiles/Pin5.svg")),
+    ("Pin5-Dora.svg", include_bytes!("../../../web/tiles/Pin5-Dora.svg")),
+    ("Pin6.svg", include_bytes!("../../../web/tiles/Pin6.svg")),
+    ("Pin7.svg", include_bytes!("../../../web/tiles/Pin7.svg")),
+    ("Pin8.svg", include_bytes!("../../../web/tiles/Pin8.svg")),
+    ("Pin9.svg", include_bytes!("../../../web/tiles/Pin9.svg")),
+    ("Sou1.svg", include_bytes!("../../../web/tiles/Sou1.svg")),
+    ("Sou2.svg", include_bytes!("../../../web/tiles/Sou2.svg")),
+    ("Sou3.svg", include_bytes!("../../../web/tiles/Sou3.svg")),
+    ("Sou4.svg", include_bytes!("../../../web/tiles/Sou4.svg")),
+    ("Sou5.svg", include_bytes!("../../../web/tiles/Sou5.svg")),
+    ("Sou5-Dora.svg", include_bytes!("../../../web/tiles/Sou5-Dora.svg")),
+    ("Sou6.svg", include_bytes!("../../../web/tiles/Sou6.svg")),
+    ("Sou7.svg", include_bytes!("../../../web/tiles/Sou7.svg")),
+    ("Sou8.svg", include_bytes!("../../../web/tiles/Sou8.svg")),
+    ("Sou9.svg", include_bytes!("../../../web/tiles/Sou9.svg")),
+];
 
 /// Which kind of bot fills the three seats the human does not take.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -115,6 +160,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/", get(index))
         .route("/app.js", get(app_js))
         .route("/style.css", get(style_css))
+        .route("/tiles/{name}", get(tile_svg))
         .route("/ws", get(ws_handler))
         .route("/api/replays", get(list_replays))
         .route("/api/analyze", get(analyze_replay))
@@ -139,6 +185,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn index() -> impl IntoResponse {
     Html(INDEX_HTML)
+}
+
+/// One tile SVG out of the embedded set.
+async fn tile_svg(axum::extract::Path(name): axum::extract::Path<String>) -> Response {
+    let headers = [
+        (axum::http::header::CONTENT_TYPE, "image/svg+xml"),
+        (axum::http::header::CACHE_CONTROL, "public, max-age=86400"),
+    ];
+    match TILE_SVGS.iter().find(|(n, _)| *n == name) {
+        Some((_, bytes)) => (headers, *bytes).into_response(),
+        None => (axum::http::StatusCode::NOT_FOUND, "no such tile").into_response(),
+    }
 }
 
 async fn dashboard() -> impl IntoResponse {

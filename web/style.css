@@ -50,24 +50,29 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
 #table {
   position: relative; flex: 1; display: grid; gap: 6px; padding: 10px;
   grid-template-columns: 150px 1fr 150px;
-  grid-template-rows: auto 1fr auto auto;
+  grid-template-rows: auto 1fr auto auto auto;
   grid-template-areas:
     ".    top    ."
     "left center right"
     ".    bottom ."
+    "acts acts   acts"
     "hand hand   hand";
   background: radial-gradient(circle at 50% 42%, #146b41 0%, var(--felt) 55%, var(--felt-dark) 100%);
   min-height: 0;
 }
 
 .seat { background: rgba(0, 0, 0, 0.18); border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 10px; padding: 6px 8px; display: flex; flex-direction: column; gap: 4px; }
+  border-radius: 10px; padding: 6px 8px; display: flex; flex-direction: column; gap: 4px;
+  transition: box-shadow 0.2s ease, background 0.2s ease; }
+.seat.turn { background: rgba(255, 209, 102, 0.09); box-shadow: inset 0 0 0 1px rgba(255, 209, 102, 0.45); }
+.seat-head .delta { font-size: 11px; margin-left: 6px; }
 .seat-top { grid-area: top; align-items: center; }
 .seat-left { grid-area: left; }
 .seat-right { grid-area: right; }
 .seat-bottom { grid-area: bottom; align-items: center; }
 
-.seat-head { display: flex; align-items: baseline; gap: 8px; font-size: 13px; width: 100%; }
+.seat-head { display: flex; align-items: baseline; gap: 8px; font-size: 13.5px; width: 100%; }
+.seat-head .name { font-size: 14px; }
 .seat-head .wind {
   display: inline-flex; align-items: center; justify-content: center;
   width: 22px; height: 22px; border-radius: 50%; background: #0b2b1b;
@@ -96,138 +101,102 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
 #center-meta { color: var(--muted); font-size: 13px; margin-top: 6px; text-align: center; }
 #dora-box { background: rgba(0, 0, 0, 0.25); border-radius: 10px; padding: 8px; border: 1px solid var(--line); }
 #dora-box .label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
-#log {
-  grid-column: 1 / -1; overflow-y: auto; max-height: 190px; font-size: 13px; line-height: 1.6;
-  background: rgba(0, 0, 0, 0.22); border-radius: 10px; padding: 8px 10px; color: var(--muted);
+.collapsible-head {
+  grid-column: 1 / -1; display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--muted); margin-bottom: 2px;
 }
+.collapsible-head button.mini { padding: 2px 8px; font-size: 11px; margin-left: auto; }
+#log {
+  grid-column: 1 / -1; overflow-y: auto; max-height: 132px; font-size: 12.5px; line-height: 1.55;
+  background: rgba(0, 0, 0, 0.24); border-radius: 10px; padding: 8px 10px; color: var(--muted);
+}
+#log.collapsed { display: none; }
 #log .ev { white-space: pre-wrap; }
 #log .ev strong { color: var(--ink); }
 
 /* ---------- discards ---------- */
 .pond { display: grid; grid-template-columns: repeat(6, auto); gap: 3px; justify-content: start; }
-.pond .tile { --w: 26px; --h: 36px; }
-.pond .tile.called { opacity: 0.4; }
-.pond .tile.rot { outline: 1px solid rgba(255,143,143,0.55); }
+.pond .tile { --w: 26px; --h: 35px; }
+.pond .tile.called { opacity: 0.42; }
 
 /* ---------- tiles ---------- */
-/* One tile is a physical object: a light face, a darker edge, a thickness at
-   the bottom. Sizes come from two variables so the same markup renders a 26 px
-   pond tile and a 52 px hand tile without a second code path. */
+/* Real tile artwork (public-domain SVG, CC0). One variable pair sets the size, so
+   the identical markup renders a 22 px pond tile and a 62 px hand tile. */
 .tiles { display: flex; flex-wrap: wrap; gap: 3px; align-items: flex-end; }
 
 .tile {
-  --w: 38px;
-  --h: 52px;
+  --w: 40px;
+  --h: 54px;
   position: relative;
   width: var(--w);
   height: var(--h);
-  border-radius: calc(var(--w) * 0.14);
-  background: linear-gradient(170deg, #fffdf6 0%, #f3efe0 62%, #e8e2ce 100%);
-  border: 1px solid #cdc7b2;
-  box-shadow: inset 0 1px 0 #fff, 0 2px 0 #c4bda6, 0 3px 6px rgba(0, 0, 0, 0.35);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  flex: 0 0 auto;
   user-select: none;
   line-height: 1;
-  flex: 0 0 auto;
 }
-.tile .face {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.tile .tile-img {
   width: 100%;
   height: 100%;
-  padding: calc(var(--w) * 0.08);
-  font-weight: 700;
-  color: #23201c;
+  display: block;
+  pointer-events: none;
+  filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.35));
 }
+.tile.small { --w: 27px; --h: 36px; }
+.tile.micro { --w: 21px; --h: 28px; }
+.tile.big   { --w: 50px; --h: 67px; }
+.tile.huge  { --w: 58px; --h: 78px; }
 
-.tile.small { --w: 27px; --h: 37px; }
-.tile.micro { --w: 22px; --h: 30px; }
-.tile.big   { --w: 46px; --h: 62px; }
-
-/* 萬 */
-.tile .face.m { flex-direction: column; gap: calc(var(--h) * 0.02); }
-.tile .face.m .num { font-size: calc(var(--h) * 0.34); color: #1b2436; }
-.tile .face.m .kanji { font-size: calc(var(--h) * 0.32); color: #b3261e; }
-.tile.aka .face.m .num,
-.tile.aka .face.m .kanji { color: #d81b1b; }
-
-/* 筒 (dots) and 索 (bamboo) */
-.tile .face.p,
-.tile .face.s { padding: calc(var(--w) * 0.06); }
-.pips, .sticks {
-  display: flex; flex-wrap: wrap; align-content: center; justify-content: center;
-  width: 100%; height: 100%; gap: calc(var(--w) * 0.04);
+/* fallback face, only shown when the asset is missing */
+.tile.no-asset {
+  background: linear-gradient(170deg, #fffdf6, #eae4d0);
+  border: 1px solid #cdc7b2; border-radius: 4px;
+  display: grid; place-items: center;
 }
-.pips i {
-  width: calc(var(--w) * 0.2); height: calc(var(--w) * 0.2); border-radius: 50%;
-  background: radial-gradient(circle at 35% 30%, #4a7fd0, #14459c 70%);
-  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.35);
-}
-.pips[data-n="1"] i { width: calc(var(--w) * 0.5); height: calc(var(--w) * 0.5); }
-.tile.aka .pips i { background: radial-gradient(circle at 35% 30%, #ff7a70, #c0170f 70%); }
+.tile.no-asset .face { font-weight: 700; color: #23201c; font-size: calc(var(--h) * 0.42); }
+.tile.no-asset .face.m { color: #b3261e; }
 
-.sticks i {
-  width: calc(var(--w) * 0.13); height: calc(var(--w) * 0.34);
-  border-radius: 999px;
-  background: linear-gradient(180deg, #2f9c5c, #17643a);
-  box-shadow: inset -1px 0 0 rgba(255,255,255,0.25);
-}
-.sticks[data-n="1"] i { height: calc(var(--h) * 0.5); width: calc(var(--w) * 0.22); }
-.tile.aka .sticks i { background: linear-gradient(180deg, #ff7a70, #c0170f); }
-
-/* 字牌 */
-.tile .face.honor { font-size: calc(var(--h) * 0.5); }
-.tile .face.h27, .tile .face.h28, .tile .face.h29, .tile .face.h30 { color: #1b2436; }
-.tile .face.h31 { color: #6b6b6b; }
-.tile .face.h32 { color: #17643a; }
-.tile .face.h33 { color: #b3261e; }
-
-/* interaction */
-.tile.clickable { cursor: pointer; transition: transform 0.09s ease, box-shadow 0.09s ease; }
-.tile.clickable:hover { transform: translateY(-4px); box-shadow: inset 0 1px 0 #fff, 0 2px 0 #c4bda6, 0 8px 14px rgba(0,0,0,0.45); }
-.tile.selected { transform: translateY(-6px); }
-.tile.disabled { filter: grayscale(0.75) brightness(0.82); cursor: not-allowed; }
-.tile.drawn { margin-left: calc(var(--w) * 0.45); box-shadow: inset 0 1px 0 #fff, 0 0 0 2px var(--gold), 0 3px 6px rgba(0,0,0,0.35); }
-.tile.rot { transform: rotate(90deg); margin: 2px calc(var(--w) * 0.18); }
+.tile.clickable { cursor: pointer; transition: transform 0.09s ease, filter 0.09s ease; }
+.tile.clickable:hover { transform: translateY(-6px); }
+.tile.clickable:hover .tile-img { filter: drop-shadow(0 8px 10px rgba(0,0,0,0.5)) brightness(1.06); }
+.tile.selected { transform: translateY(-8px); }
+.tile.disabled .tile-img { filter: grayscale(0.8) brightness(0.7); }
+.tile.drawn { margin-left: calc(var(--w) * 0.42); }
+.tile.drawn .tile-img { filter: drop-shadow(0 0 5px var(--gold)) drop-shadow(0 2px 3px rgba(0,0,0,0.4)); }
+/* 立直宣言牌 lies sideways, the way a real table reads it */
+.tile.rot { transform: rotate(90deg); margin: 3px calc(var(--w) * 0.24); }
 .tile.fresh { animation: tile-drop 0.16s ease-out; }
 @keyframes tile-drop {
-  from { transform: translateY(-8px) scale(0.96); opacity: 0.4; }
+  from { transform: translateY(-9px) scale(0.94); opacity: 0.35; }
   to   { transform: translateY(0) scale(1); opacity: 1; }
 }
 
-/* tile backs, for the hands you are not allowed to see */
-.backs { display: flex; gap: 2px; flex-wrap: wrap; }
-.backs.vertical { flex-direction: column; }
-.back {
-  --bw: 13px;
-  width: var(--bw); height: calc(var(--bw) * 1.55);
-  border-radius: 3px;
-  background: linear-gradient(160deg, #2f7d55 0%, #1d5b3c 55%, #14432c 100%);
-  border: 1px solid #0b2b1b;
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.14);
-}
-.backs.vertical .back { width: calc(var(--bw) * 1.55); height: var(--bw); }
+/* opponents' tiles, face down */
+.backs { display: flex; gap: 1px; flex-wrap: wrap; justify-content: center; }
+.backs.vertical { flex-direction: column; align-items: center; }
+.back { width: 15px; height: 20px; }
+.back img { width: 100%; height: 100%; display: block; filter: drop-shadow(0 1px 1px rgba(0,0,0,0.4)); }
+.backs.vertical .back { width: 20px; height: 15px; }
+.backs.vertical .back img { transform: rotate(90deg); }
 
 /* ---------- hand ---------- */
 #hand-area {
   grid-area: hand; display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap;
   background: rgba(0, 0, 0, 0.22); border-radius: 10px; padding: 10px 12px;
 }
-#hand { flex: 1; }
+#hand { flex: 1; gap: 4px; }
+#hand .tile { --w: 46px; --h: 62px; }
+#hand .tile.drawn { --w: 50px; --h: 67px; }
 #hand-info { display: flex; flex-direction: column; gap: 4px; align-items: flex-end;
   font-size: 13px; color: var(--muted); min-width: 130px; }
 .flag { color: #ffb4b4; font-weight: 700; }
 .melds { display: flex; gap: 10px; }
 .melds .meld { display: flex; gap: 1px; padding: 2px; border-radius: 5px; background: rgba(0,0,0,0.18); }
-.melds .meld { padding: 3px; border-radius: 6px; background: rgba(0,0,0,0.2); }
-.melds .meld .tile { --w: 24px; --h: 33px; box-shadow: inset 0 1px 0 #fff, 0 1px 0 #c4bda6; }
+.melds .meld { padding: 2px; border-radius: 5px; background: rgba(0,0,0,0.22); }
+.melds .meld .tile { --w: 24px; --h: 33px; }
 
 /* ---------- actions ---------- */
-#action-bar { grid-area: hand; align-self: end; display: flex; gap: 8px; justify-content: center;
-  flex-wrap: wrap; min-height: 0; pointer-events: none; }
+#action-bar { grid-area: acts; display: flex; gap: 8px; justify-content: center;
+  flex-wrap: wrap; min-height: 0; }
 #action-bar button { pointer-events: auto; padding: 8px 16px; font-size: 15px; font-weight: 600; }
 #action-bar .riichi-toggle.on { background: #ff8f8f; color: #33110f; border-color: #ff8f8f; }
 
@@ -314,3 +283,20 @@ table.rep tr.me td { color: var(--gold); }
   border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px;
 }
 .navlink:hover { background: #1a5136; color: var(--ink); }
+
+/* riichi sticks on the table */
+.sticks-row { display: flex; flex-wrap: wrap; gap: 3px; min-height: 12px; align-items: center; }
+.riichi-stick {
+  width: 26px; height: 7px; border-radius: 3px;
+  background: linear-gradient(180deg, #fffdf5, #ded7c2);
+  border: 1px solid #b9b19a; position: relative;
+}
+.riichi-stick::after {
+  content: ""; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: 4px; height: 4px; border-radius: 50%; background: #d81b1b;
+}
+.stick-more { color: var(--muted); font-size: 11px; }
+/* score deltas after a round */
+.seat-head .delta.up { color: #6ee7a0; }
+.seat-head .delta.down { color: #ff9d9d; }
+.seat-head.acting .name::before { content: "▶ "; color: var(--gold); font-size: 10px; }
