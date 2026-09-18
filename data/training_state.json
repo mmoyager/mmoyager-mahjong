@@ -1,5 +1,5 @@
 {
-  "iteration": 70,
+  "iteration": 71,
   "base": "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-ab.bin",
   "best": "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-ab.bin",
   "best_score": 0.0,
@@ -1729,14 +1729,14 @@
     }
   ],
   "data_files": [
-    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0067.bin",
-    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0067-mixed.bin",
     "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0068.bin",
     "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0068-mixed.bin",
     "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0069.bin",
     "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0069-mixed.bin",
     "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0070.bin",
-    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0070-mixed.bin"
+    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0070-mixed.bin",
+    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0071.bin",
+    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/selfplay/sp-0071-mixed.bin"
   ],
   "checkpoints": [
     "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-best.bin",
@@ -1792,7 +1792,8 @@
     "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-0067.bin",
     "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-0068.bin",
     "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-0069.bin",
-    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-0070.bin"
+    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-0070.bin",
+    "/Users/mmoyager/Documents/mmoyager/mmoyager_mahjong/data/checkpoints/ck-0071.bin"
   ],
   "eval_games": 9600,
   "confirm_offset": 0,
