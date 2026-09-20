@@ -711,6 +711,23 @@ async def check_settle():
             print("  note: no hand was won by us in this run")
         if stats["own-draw"] == 0:
             print("  note: no hand ended on our own discard in this run")
+
+        # An abortive draw ends the hand with the wall nearly full, which reads
+        # as a bug unless the panel says who declared it, why, and how much wall
+        # was left. The event shape injected here is the server's own.
+        await b.ev("(() => handle({type: 'events', events: [{Ryuukyoku: "
+                   "{reason: 'NineTerminals', tenpai: [false, false, false, false], "
+                   "deltas: [0, 0, 0, 0], by: 1, wall_remaining: 66}}]}))()")
+        await asyncio.sleep(2.0)
+        abort = json.loads(await b.ev('''JSON.stringify({
+            title: document.getElementById("overlay-title").textContent,
+            text: document.getElementById("overlay-body").textContent.replace(/\s+/g, " ")})'''))
+        print(f"  abort panel: {abort['title']} :: {abort['text'][:100]}")
+        if "九种九牌" not in abort["text"] or "宣布" not in abort["text"]:
+            failures.append(f"an abort does not name its reason and declarer: {abort['text'][:90]}")
+        if "66" not in abort["text"]:
+            failures.append(f"an abort does not report the remaining wall: {abort['text'][:90]}")
+
         if b.problems:
             failures.append(f"{len(b.problems)} page exceptions (first: {b.problems[0]})")
         if b.console:

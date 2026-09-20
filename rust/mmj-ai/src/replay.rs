@@ -495,6 +495,7 @@ pub fn summarize(file: &ReplayFile) -> (Vec<HandReport>, Vec<PlayerReport>, [i32
                 reason,
                 tenpai,
                 deltas,
+                ..
             } => {
                 // An abortive draw (九種九牌 and friends) does not compare hands
                 // and pays nothing, so counting every seat as noten there

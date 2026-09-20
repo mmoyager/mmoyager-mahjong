@@ -268,6 +268,14 @@ pub enum Event {
         reason: DrawReason,
         tenpai: [bool; 4],
         deltas: [i32; 4],
+        /// Who declared it, when a player did (九種九牌). A settlement that only
+        /// says "流局" leaves the player unable to tell a legal abort from a bug.
+        #[serde(default)]
+        by: Option<u8>,
+        /// Live wall tiles left when the hand ended, so the player can check the
+        /// draw against what the table showed.
+        #[serde(default)]
+        wall_remaining: u32,
     },
     RoundEnd {
         scores: [i32; 4],
@@ -1100,7 +1108,7 @@ impl Table {
                 if !self.has_nine_terminals(seat) {
                     return Err("九種九牌 requires nine terminal/honor kinds".to_string());
                 }
-                self.abort_round(DrawReason::NineTerminals);
+                self.abort_round_by(DrawReason::NineTerminals, Some(seat));
                 Ok(())
             }
             Action::Discard { tile, riichi } => {
@@ -1785,6 +1793,8 @@ impl Table {
             reason: DrawReason::Exhaustive,
             tenpai,
             deltas,
+            by: None,
+            wall_remaining: self.wall.remaining(),
         });
         self.outcome = RoundOutcome {
             dealer_repeat: tenpai[self.dealer as usize],
@@ -1797,10 +1807,17 @@ impl Table {
     }
 
     fn abort_round(&mut self, reason: DrawReason) {
+        self.abort_round_by(reason, None);
+    }
+
+    /// An abortive draw, optionally naming the player who declared it.
+    fn abort_round_by(&mut self, reason: DrawReason, by: Option<u8>) {
         self.push_event(Event::Ryuukyoku {
             reason,
             tenpai: [false; 4],
             deltas: [0; 4],
+            by,
+            wall_remaining: self.wall.remaining(),
         });
         // Every 途中流局 keeps the dealer (連荘) and adds a honba.
         self.outcome = RoundOutcome {
@@ -2872,6 +2889,48 @@ mod tests {
             "the aborted kan must not draw a replacement tile in the next round"
         );
         assert!(t.players[3].melds.is_empty(), "the new round starts clean");
+    }
+
+    /// An abortive draw must say who declared it and how much wall was left: a
+    /// settlement that only says "流局" is indistinguishable from a bug for the
+    /// player (reported after a 九種九牌 abort with a nearly full wall).
+    #[test]
+    fn a_nine_terminals_abort_names_the_declarer_and_the_wall() {
+        let mut t = table(9);
+        set_hand(&mut t, 0, "19m19p19s1234567z");
+        t.players[0].draws = 1;
+        t.players[0].drawn = Some(tile("1z", 2));
+        t.players[0].hand_tiles.push(tile("1z", 2));
+        t.phase = Phase::Turn { seat: 0 };
+        t.refresh_decisions();
+        let kyuushu = t
+            .decisions()
+            .iter()
+            .find(|d| d.seat == 0)
+            .expect("seat 0 has a decision")
+            .actions
+            .iter()
+            .find(|a| matches!(a, Action::Kyuushu))
+            .copied()
+            .expect("九種九牌 is offered");
+        let wall_before = t.wall.remaining();
+        t.submit(0, kyuushu).unwrap();
+        let (by, wall) = t
+            .history
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                Event::Ryuukyoku {
+                    reason: DrawReason::NineTerminals,
+                    by,
+                    wall_remaining,
+                    ..
+                } => Some((*by, *wall_remaining)),
+                _ => None,
+            })
+            .expect("the abort is recorded with its reason");
+        assert_eq!(by, Some(0), "the declarer is named");
+        assert_eq!(wall, wall_before, "and the wall at that moment");
     }
 
     /// A ron on the discard that would trigger 四風連打 / 四家立直 wins: the abort

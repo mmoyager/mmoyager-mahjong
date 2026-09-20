@@ -154,6 +154,11 @@ function kindName(kind) {
 // Haku.svg, but everything in it sits inside <defs> and it paints nothing.
 const HONOR_FILES = ["Ton", "Nan", "Shaa", "Pei", "Blank", "Hatsu", "Chun"];
 
+// Bumped whenever the artwork under web/tiles/ changes. The files used to be
+// served with a day-long max-age, so a browser that had seen the old art kept
+// showing it; a new query string makes the difference visible immediately.
+const TILE_REVISION = "2";
+
 function tileFile(tile) {
   const k = kindOf(tile);
   if (k >= 27) return HONOR_FILES[k - 27];
@@ -178,7 +183,7 @@ function tileEl(tile, opts = {}) {
   img.className = "tile-img";
   img.alt = tileName(tile);
   img.draggable = false;
-  img.src = "/tiles/" + tileFile(tile) + ".svg";
+  img.src = "/tiles/" + tileFile(tile) + ".svg?v=" + TILE_REVISION;
   img.addEventListener("error", () => {
     // Keep the table readable without the asset: fall back to a text face.
     el.classList.add("no-asset");
@@ -807,8 +812,11 @@ function absorbEvents(events) {
       }
     }
   } else if (draw) {
-    queue.push({ kind: "draw", data: draw.Ryuukyoku });
-    announce("流局", DRAW_REASONS[draw.Ryuukyoku.reason] || "", announceMs);
+    const dd = draw.Ryuukyoku;
+    queue.push({ kind: "draw", data: dd });
+    const sub = (DRAW_REASONS[dd.reason] || "")
+      + (dd.by !== null && dd.by !== undefined ? ` · ${botNames[dd.by] || ""} 宣布` : "");
+    announce(dd.reason === "Exhaustive" ? "流局" : "途中流局", sub, announceMs);
   }
   clearTimeout(settleTimer);
   settleTimer = setTimeout(() => enqueueSettlements(queue), announceMs);
@@ -891,6 +899,8 @@ function describeEvent(e) {
     const tenpai = r.tenpai.map((t, i) => (t ? botNames[i] : null)).filter(Boolean);
     const showTenpai = r.reason === "Exhaustive" && tenpai.length;
     return `<strong>${DRAW_REASONS[r.reason] || "流局"}</strong>`
+      + (r.by !== null && r.by !== undefined ? `（${who(r.by)} 宣布）` : "")
+      + ` · 余 ${r.wall_remaining ?? "?"} 张`
       + (showTenpai ? ` · 听牌：${tenpai.map(esc).join("、")}` : "");
   }
   if (e.RoundEnd) {
@@ -1005,11 +1015,36 @@ function showWin(w) {
   overlay(title, body.innerHTML);
 }
 
+/// One plain sentence per draw reason. A 途中流局 ends the hand before the wall
+/// runs out, which looks like a bug unless the table says why it happened.
+const DRAW_NOTES = {
+  Exhaustive: "牌山摸完，比较听牌：不听者支付罚符",
+  NineTerminals: "途中流局：某家在第一次摸牌时手中有九种以上的幺九牌，宣布流局",
+  FourWinds: "途中流局：四家第一次出牌都是同一种风牌，且无人鸣牌",
+  FourRiichi: "途中流局：四家全部立直",
+  FourKans: "途中流局：四家合计开了四个杠，且不是同一人所开",
+  TripleRon: "途中流局：三家同时荣和",
+};
+
 function showRyuukyoku(r) {
   const body = document.createElement("div");
   const head = document.createElement("p");
-  head.innerHTML = `<strong>${esc(DRAW_REASONS[r.reason] || "流局")}</strong>`;
+  head.innerHTML = `<strong>${esc(DRAW_REASONS[r.reason] || "流局")}</strong>`
+    + (r.by !== null && r.by !== undefined ? ` · ${who(r.by)} 宣布` : "");
   body.appendChild(head);
+
+  const why = document.createElement("p");
+  why.className = "muted";
+  why.textContent = DRAW_NOTES[r.reason] || "本局作废";
+  body.appendChild(why);
+
+  // The wall reading lets the player check the draw against the table: an abort
+  // leaves the wall nearly full, an exhaustive draw leaves it empty.
+  const wall = document.createElement("p");
+  wall.className = "muted";
+  wall.textContent = `本局结束时牌山还剩 ${r.wall_remaining ?? "?"} 张`
+    + (r.reason === "Exhaustive" ? "" : "（途中流局：不计点数，庄家连庄并加一本场）");
+  body.appendChild(wall);
 
   // Only an exhaustive draw compares hands; the abortive draws pay nobody, so
   // printing tenpai there would invent a settlement that never happened.

@@ -188,15 +188,50 @@ async fn index() -> impl IntoResponse {
 }
 
 /// One tile SVG out of the embedded set.
-async fn tile_svg(axum::extract::Path(name): axum::extract::Path<String>) -> Response {
-    let headers = [
-        (axum::http::header::CONTENT_TYPE, "image/svg+xml"),
-        (axum::http::header::CACHE_CONTROL, "public, max-age=86400"),
-    ];
-    match TILE_SVGS.iter().find(|(n, _)| *n == name) {
-        Some((_, bytes)) => (headers, *bytes).into_response(),
-        None => (axum::http::StatusCode::NOT_FOUND, "no such tile").into_response(),
+async fn tile_svg(
+    axum::extract::Path(name): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    // These assets are baked into the binary and change whenever the artwork
+    // does. A long max-age meant a rebuilt server kept serving the *old* tiles
+    // out of the browser cache for a day — the new artwork was on the server and
+    // invisible on screen. Revalidate instead: a content hash as the ETag, and
+    // `no-cache` so a refresh always asks.
+    let Some((_, bytes)) = TILE_SVGS.iter().find(|(n, _)| *n == name) else {
+        return (axum::http::StatusCode::NOT_FOUND, "no such tile").into_response();
+    };
+    let etag = format!("\"{:016x}\"", hash_bytes(bytes));
+    if headers
+        .get(axum::http::header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains(etag.trim_matches('"')))
+        .unwrap_or(false)
+    {
+        return (
+            axum::http::StatusCode::NOT_MODIFIED,
+            [(axum::http::header::ETAG, etag)],
+        )
+            .into_response();
     }
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "image/svg+xml".to_string()),
+            (axum::http::header::CACHE_CONTROL, "no-cache".to_string()),
+            (axum::http::header::ETAG, etag),
+        ],
+        *bytes,
+    )
+        .into_response()
+}
+
+/// A cheap content hash, used only to tell one asset revision from another.
+fn hash_bytes(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    h
 }
 
 async fn dashboard() -> impl IntoResponse {
@@ -205,14 +240,20 @@ async fn dashboard() -> impl IntoResponse {
 
 async fn dashboard_js() -> impl IntoResponse {
     (
-        [(axum::http::header::CONTENT_TYPE, "application/javascript")],
+        [
+            (axum::http::header::CONTENT_TYPE, "application/javascript"),
+            (axum::http::header::CACHE_CONTROL, "no-cache"),
+        ],
         DASHBOARD_JS,
     )
 }
 
 async fn dashboard_css() -> impl IntoResponse {
     (
-        [(axum::http::header::CONTENT_TYPE, "text/css")],
+        [
+            (axum::http::header::CONTENT_TYPE, "text/css"),
+            (axum::http::header::CACHE_CONTROL, "no-cache"),
+        ],
         DASHBOARD_CSS,
     )
 }
@@ -284,15 +325,26 @@ async fn analyze_replay(
     }
 }
 
+// The page's own assets are embedded too, so they change with every build:
+// revalidate rather than let a browser serve a stale table from cache.
 async fn app_js() -> impl IntoResponse {
     (
-        [("content-type", "application/javascript; charset=utf-8")],
+        [
+            ("content-type", "application/javascript; charset=utf-8"),
+            ("cache-control", "no-cache"),
+        ],
         APP_JS,
     )
 }
 
 async fn style_css() -> impl IntoResponse {
-    ([("content-type", "text/css; charset=utf-8")], STYLE_CSS)
+    (
+        [
+            ("content-type", "text/css; charset=utf-8"),
+            ("cache-control", "no-cache"),
+        ],
+        STYLE_CSS,
+    )
 }
 
 async fn ws_handler(
