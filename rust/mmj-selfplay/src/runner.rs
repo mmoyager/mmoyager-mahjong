@@ -208,6 +208,15 @@ impl Engine {
         record: [bool; 4],
         seed: u64,
     ) -> (GameOutcome, Vec<u8>) {
+        // Reseed from the game's own seed. An Engine is created once per rayon
+        // worker (loading the net is the expensive part), so without this the
+        // random draws of a game would depend on how many games that worker had
+        // already happened to play — i.e. on the work-stealing schedule. That
+        // made `generate` irreproducible at batch sizes where the split
+        // boundaries vary (measured: --batch 256 differs run to run, --batch 32
+        // did not), which silently invalidated every A/B on generated data.
+        // Seeding per game makes the data a function of `--seed` alone.
+        self.rng = StdRng::seed_from_u64(seed ^ 0x5EED_1234_ABCD_0001);
         // The fighters are created once per thread; switch them to the improved
         // teacher when the caller asked for it.
         for f in self.fighters.iter_mut() {

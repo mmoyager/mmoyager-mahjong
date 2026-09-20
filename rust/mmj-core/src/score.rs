@@ -475,6 +475,16 @@ pub struct ScoreResult {
     /// Base points before rounding.
     pub base: u32,
     pub is_dealer: bool,
+    /// Han from the dora indicators, kept separate from `yaku` because dora is
+    /// not a yaku — but a player still wants to see where the han came from.
+    #[serde(default)]
+    pub dora_han: u16,
+    /// Han from the ura indicators (only revealed to a riichi hand).
+    #[serde(default)]
+    pub ura_han: u16,
+    /// Han from red fives.
+    #[serde(default)]
+    pub aka_han: u16,
 }
 
 impl ScoreResult {
@@ -1052,20 +1062,25 @@ pub fn score_win(ctx: &WinContext<'_>) -> Option<ScoreResult> {
         })
         .collect();
 
-    // Dora and red fives add han but are never a yaku on their own.
-    let dora_han = |ctx: &WinContext<'_>| -> u16 {
-        let all = ctx.all_counts();
-        let mut d = 0u16;
-        for &k in &ctx.dora_kinds {
-            d += all[k as usize] as u16;
-        }
-        if ctx.riichi || ctx.double_riichi {
-            for &k in &ctx.ura_kinds {
-                d += all[k as usize] as u16;
-            }
-        }
-        d + ctx.aka_count as u16
+    // Dora and red fives add han but are never a yaku on their own. The three
+    // sources are kept apart so the result can show *why* a hand is worth what
+    // it is worth, which is the difference between "3番" and an explanation.
+    let all_for_dora = ctx.all_counts();
+    let dora_only: u16 = ctx
+        .dora_kinds
+        .iter()
+        .map(|&k| all_for_dora[k as usize] as u16)
+        .sum();
+    let ura_only: u16 = if ctx.riichi || ctx.double_riichi {
+        ctx.ura_kinds
+            .iter()
+            .map(|&k| all_for_dora[k as usize] as u16)
+            .sum()
+    } else {
+        0
     };
+    let aka_only: u16 = ctx.aka_count as u16;
+    let dora_han = dora_only + ura_only + aka_only;
 
     let mut best: Option<(YakuList, bool, u8, u16, u16)> = None;
     let mut consider = |yaku: YakuList, yakuman: bool, mult: u8, fu: u16, han: u16| {
@@ -1104,7 +1119,7 @@ pub fn score_win(ctx: &WinContext<'_>) -> Option<ScoreResult> {
         let han = if yakuman {
             13 * mult as u16
         } else {
-            yaku.iter().map(|&(_, h)| h as u16).sum::<u16>() + dora_han(ctx)
+            yaku.iter().map(|&(_, h)| h as u16).sum::<u16>() + dora_han
         };
         consider(yaku, yakuman, mult, 25, han);
     }
@@ -1187,7 +1202,7 @@ pub fn score_win(ctx: &WinContext<'_>) -> Option<ScoreResult> {
             if yaku.is_empty() {
                 continue; // dora alone is not a yaku
             }
-            let han: u16 = yaku.iter().map(|&(_, h)| h as u16).sum::<u16>() + dora_han(ctx);
+            let han: u16 = yaku.iter().map(|&(_, h)| h as u16).sum::<u16>() + dora_han;
             let is_pinfu = yaku.iter().any(|&(y, _)| y == Yaku::Pinfu);
             let fu = compute_fu(&input, is_pinfu);
             consider(yaku, false, 0, fu, han);
@@ -1208,6 +1223,10 @@ pub fn score_win(ctx: &WinContext<'_>) -> Option<ScoreResult> {
             yakuman: if yakuman { mult } else { 0 },
             base,
             is_dealer,
+            // A yakuman is not scored by han, so its dora do not figure in the total.
+            dora_han: if yakuman { 0 } else { dora_only },
+            ura_han: if yakuman { 0 } else { ura_only },
+            aka_han: if yakuman { 0 } else { aka_only },
         }
     })
 }
@@ -1317,6 +1336,10 @@ pub fn score_simple(han: u16, fu: u16, rules: &Rules, is_dealer: bool, yaku: Yak
         yakuman: 0,
         base,
         is_dealer,
+        // Callers pass a total han; there is no dora breakdown to give.
+        dora_han: 0,
+        ura_han: 0,
+        aka_han: 0,
     }
 }
 

@@ -11,9 +11,12 @@ Two modes:
 
     python3 scripts/ui_check.py fit     # does it fit, at four window sizes
     python3 scripts/ui_check.py play    # play a whole tonpuu game, catch errors
+    python3 scripts/ui_check.py riichi  # after 立直 no call may be offered
+    python3 scripts/ui_check.py panels  # panels, clipping and overlays
 
 `fit` is the regression check for layout; `play` is the end-to-end check for
-rounds, wins, draws, calls and the final overlay. Both need the server running:
+rounds, wins, draws, calls and the final overlay; `riichi` is the rules check
+that a declared riichi locks the hand (no 吃/碰/杠, only the drawn tile). Both need the server running:
 
     ./target/release/mmj-serve --port 8787 --checkpoint data/checkpoints/ck-ab.bin
 
@@ -23,6 +26,7 @@ change the way the Rust tests are run after any engine change.
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import time
@@ -282,14 +286,237 @@ async def check_play():
         return failures
 
 
+# --- the riichi rules check ------------------------------------------------
+
+# One step of a game played to reach riichi and then watch what is offered: the
+# human never calls (so the hand stays closed and tenpai stays reachable),
+# declares 立直 the moment it is offered, and afterwards reports what the UI
+# offers — which must be nothing but a pass and the drawn tile.
+RIICHI_STEP = r"""
+(() => {
+  const out = [];
+  const overlay = document.getElementById('overlay');
+  if (overlay && !overlay.classList.contains('hidden')) {
+    const over = document.getElementById('overlay-title').textContent === '对局结束';
+    document.getElementById('overlay-close').click();
+    // A finished game offers no decisions, so start another one: the point is
+    // to collect enough 立直 declarations, not to play one particular game.
+    if (over) { document.getElementById('btn-new').click(); return 'new-game'; }
+    return 'overlay-closed';
+  }
+  const bar = document.getElementById('action-bar');
+  const btns = bar ? [...bar.querySelectorAll('button')] : [];
+  const toggle = btns.find(b => b.classList.contains('riichi-toggle'));
+  if (toggle && !toggle.classList.contains('on')) {
+    toggle.click();
+    const t = document.querySelector('#hand .tile.clickable');
+    if (t) t.click();
+    return 'declare-riichi';
+  }
+  // Play on without calling: pass every call window, discard when it is ours.
+  const pass = btns.find(b => b.textContent.trim() === '跳过');
+  if (pass) { pass.click(); return 'pass'; }
+  const discard = document.getElementById('btn-discard');
+  if (discard && !discard.disabled) { discard.click(); return 'discard'; }
+  const t = document.querySelector('#hand .tile.clickable');
+  if (t) { t.click(); return 'click-tile'; }
+  return 'idle';
+})()"""
+
+RIICHI_STATUS = r"""
+(() => {
+  const btns = [...document.getElementById('action-bar').querySelectorAll('button')];
+  return JSON.stringify({
+    round: document.getElementById('round-name').textContent,
+    label: document.getElementById('label-self').textContent,
+    callButtons: btns.map(b => b.textContent.trim()).filter(x => /^吃|^碰|杠/.test(x)),
+    clickable: document.querySelectorAll('#hand .tile.clickable').length,
+    sideways: document.querySelectorAll('#pond-self .tile.rot').length,
+    overlay: document.getElementById('overlay').classList.contains('hidden')
+        ? null : document.getElementById('overlay-title').textContent,
+  });
+})()"""
+
+
+async def check_riichi():
+    """After 立直 the hand is locked: no 吃 / 碰 / 杠 may ever be offered."""
+    failures = []
+    declared_rounds = 0
+    windows = 0
+    violations = []
+    async with Browser("1440,900") as b:
+        await b.new_game("tonpuu")
+        t0 = time.time()
+        armed = False
+        while time.time() - t0 < PLAY_SECONDS:
+            step = str(await b.ev(RIICHI_STEP))
+            raw = await b.ev(RIICHI_STATUS)
+            if raw:
+                st = json.loads(raw)
+                declared = "立直" in st["label"]
+                if declared and not armed:
+                    armed = True
+                    declared_rounds += 1
+                    print(f"  declared 立直 in {st['round']} "
+                          f"(sideways tile in pond: {st['sideways']})")
+                if declared:
+                    windows += 1
+                    if st["callButtons"]:
+                        violations.append(f"{st['round']}: offered {st['callButtons']}")
+                    if st["clickable"] > 1:
+                        violations.append(
+                            f"{st['round']}: {st['clickable']} clickable hand tiles after 立直")
+                if not declared:
+                    armed = False
+            if declared_rounds >= 3:
+                break
+            await asyncio.sleep(0.05 if step != "idle" else 0.2)
+        print(f"立直 rounds: {declared_rounds}; post-立直 observations: {windows}")
+        if declared_rounds == 0:
+            failures.append("never reached a 立直 declaration, so nothing was checked")
+        if violations:
+            failures.append(f"illegal calls offered after 立直: {violations[:5]}")
+        if b.problems:
+            failures.append(f"{len(b.problems)} page exceptions (first: {b.problems[0]})")
+        if b.console:
+            failures.append(f"{len(b.console)} console errors (first: {b.console[0]})")
+        return failures
+
+
+# --- panel and overlay checks ----------------------------------------------
+
+PANEL_PROBE = r"""
+(() => {
+  const box = (s) => { const e = document.querySelector(s); if (!e) return null;
+    const r = e.getBoundingClientRect();
+    return {x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height),
+            clipped: e.scrollHeight > e.clientHeight + 1 || e.scrollWidth > e.clientWidth + 1}; };
+  const overlap = (a, b) => {
+    if (!a || !b || !a.w || !b.w) return 0;
+    const ox = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+    const oy = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+    return (ox > 0 && oy > 0) ? Math.round(ox * oy) : 0;
+  };
+  const seats = ['across','left','right'].map(s => {
+    const e = document.getElementById('seat-' + s);
+    return {s, clipped: e.scrollHeight > e.clientHeight + 1 || e.scrollWidth > e.clientWidth + 1};
+  });
+  return JSON.stringify({
+    seats,
+    handArea: box('#hand-area'),
+    hint: box('#hint-box'),
+    hintHidden: document.getElementById('hint-box').classList.contains('hidden'),
+    bar: box('#action-bar'),
+    barButtons: document.querySelectorAll('#action-bar button').length,
+    hintOverBar: overlap(box('#hint-box'), box('#action-bar')),
+    hintOverHand: overlap(box('#hint-box'), box('#hand-area')),
+    doraCount: document.querySelectorAll('#dora-tiles .tile').length,
+    overlayOpen: !document.getElementById('overlay').classList.contains('hidden'),
+  });
+})()"""
+
+
+async def check_panels():
+    """Things the geometry and rules checks cannot see: a panel that covers a
+    button, a seat box that clips its own tiles, a help dialog that does not."""
+    failures = []
+    async with Browser("1440,900") as b:
+        await b.new_game("tonpuu")
+
+        # 1. the shortcut dialog
+        await b.ev("document.getElementById('keys-btn').click()")
+        dlg = json.loads(await b.ev("""JSON.stringify({
+            open: !document.getElementById('overlay').classList.contains('hidden'),
+            rows: document.querySelectorAll('#overlay-body tr').length,
+            dismiss: document.getElementById('overlay-close').textContent})"""))
+        print(f"  shortcut dialog: open={dlg['open']} rows={dlg['rows']} dismiss={dlg['dismiss']!r}")
+        if not dlg["open"] or dlg["rows"] < 6:
+            failures.append(f"the shortcut dialog did not open properly: {dlg}")
+        await b.ev("document.getElementById('overlay-close').click()")
+
+        # 2. wait for a call window (the action bar only exists when there is a
+        #    decision to make), then ask for a hint on top of it
+        t0 = time.time()
+        armed = False
+        while time.time() - t0 < 120:
+            st = json.loads(await b.ev("""JSON.stringify({
+                buttons: document.querySelectorAll('#action-bar button').length})"""))
+            if st["buttons"] > 0:
+                armed = True
+                break
+            # Keep the game moving: a call window only exists while play runs.
+            step = str(await b.ev(PLAY_STEP))
+            await asyncio.sleep(0.05 if step != "idle" else 0.2)
+        if not armed:
+            failures.append("never saw an action bar with buttons")
+        # Falsification hook: with the panel forced back to its old anchored
+        # corner the check must complain, otherwise it is not testing anything.
+        if os.environ.get("UI_CHECK_OLD_HINT"):
+            await b.ev("""(() => { const st = document.createElement('style');
+                st.textContent = '#hint-box { top: auto !important; bottom: 16px !important }';
+                document.head.appendChild(st); })()""")
+        await b.ev("document.getElementById('btn-hint').click()")
+        await asyncio.sleep(2.5)
+        r = json.loads(await b.ev(PANEL_PROBE))
+        print(f"  with a hint open: bar buttons={r['barButtons']} "
+              f"hint-over-bar={r['hintOverBar']} hint-over-hand={r['hintOverHand']}")
+        if r["hintHidden"]:
+            failures.append("the hint panel did not open")
+        if r["hintOverBar"]:
+            failures.append(f"the hint panel covers the action bar by {r['hintOverBar']}px²")
+        if r["hintOverHand"]:
+            failures.append(f"the hint panel covers the hand by {r['hintOverHand']}px²")
+        for s in r["seats"]:
+            if s["clipped"]:
+                failures.append(f"seat box {s['s']} clips its own tiles")
+        if r["handArea"]["clipped"]:
+            failures.append("the hand area clips its contents")
+
+        # 3. five dora indicators (four kans) must still fit the centre panel
+        fits = json.loads(await b.ev("""JSON.stringify((() => {
+            const d = document.getElementById('dora-tiles');
+            const before = d.innerHTML;
+            for (let i = 0; i < 5; i++) {
+              const t = document.createElement('div'); t.className = 'tile small'; d.appendChild(t);
+            }
+            const dr = d.getBoundingClientRect();
+            const cr = document.getElementById('centre-panel').getBoundingClientRect();
+            const over = Math.round(dr.right - cr.right);
+            d.innerHTML = before;
+            return {over}; })())"""))
+        print(f"  five dora indicators overflow the centre panel by {fits['over']}px")
+        if fits["over"] > 0:
+            failures.append(f"five dora indicators overflow the centre by {fits['over']}px")
+
+        # 4. the replay / analysis panel
+        await b.ev("document.getElementById('btn-replays').click()")
+        await asyncio.sleep(1.0)
+        rep = json.loads(await b.ev("""JSON.stringify({
+            open: !document.getElementById('replay-overlay').classList.contains('hidden'),
+            options: document.getElementById('replay-select').options.length})"""))
+        print(f"  replay panel: open={rep['open']} saved replays={rep['options']}")
+        if not rep["open"]:
+            failures.append("the replay panel did not open")
+
+        if b.problems:
+            failures.append(f"{len(b.problems)} page exceptions (first: {b.problems[0]})")
+        if b.console:
+            failures.append(f"{len(b.console)} console errors (first: {b.console[0]})")
+        return failures
+
+
 async def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "fit"
     if mode == "fit":
         failures = await check_fit()
     elif mode == "play":
         failures = await check_play()
+    elif mode == "riichi":
+        failures = await check_riichi()
+    elif mode == "panels":
+        failures = await check_panels()
     else:
-        sys.exit(f"unknown mode {mode!r}; use fit or play")
+        sys.exit(f"unknown mode {mode!r}; use fit, play, riichi or panels")
     if failures:
         print("\nFAILED:")
         for f in failures:

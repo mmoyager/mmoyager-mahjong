@@ -243,7 +243,9 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
 /* ---------- round log (secondary, collapsed by default) ---------- */
 #log-strip { grid-area: log; }
 #log-head { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
-#log-head button.mini { padding: 2px 8px; font-size: 11px; margin-left: auto; }
+#log-head button.mini { padding: 2px 8px; font-size: 11px; }
+/* the shortcut help sits at the right end of the strip, just before the toggle */
+#keys-btn { margin-left: auto; }
 #log-latest {
   flex: 1; min-width: 0; color: var(--ink); overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap;
@@ -362,8 +364,16 @@ table.rep tr.me td { color: var(--gold); }
   display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px;
   border-radius: 50%; background: var(--gold); color: #2b2306; font-weight: 700; font-size: 12px;
 }
-.self-badge .dealer-tag, .self-badge .riichi-tag {
+.self-badge .dealer-tag, .self-badge .riichi-tag, .self-badge .ippatsu-tag {
   font-size: 11px; padding: 1px 6px; border-radius: 999px;
   background: rgba(255,255,255,0.1); color: var(--muted);
 }
 .self-badge .riichi-tag { color: #ff8f8f; }
+.self-badge .ippatsu-tag { color: var(--gold); }
+.self-badge .score { margin-left: auto; color: var(--gold); font-variant-numeric: tabular-nums; }
+
+/* Keyboard focus must be visible: the whole table is playable with Tab + Enter. */
+button:focus-visible, .tile:focus-visible, a.navlink:focus-visible, select:focus-visible {
+  outline: 2px solid var(--gold); outline-offset: 2px;
+}
+.tile.clickable:focus-visible { outline-offset: 3px; }

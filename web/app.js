@@ -136,6 +136,19 @@ function tileEl(tile, opts = {}) {
 
   if (opts.onClick && !opts.disabled) {
     el.addEventListener("click", opts.onClick);
+    // A playable tile is a button: reachable by Tab, activated by Enter/Space,
+    // and announced with its face rather than as an empty box.
+    el.tabIndex = 0;
+    el.setAttribute("role", "button");
+    el.setAttribute("aria-label", opts.label || tileName(tile));
+    el.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        opts.onClick();
+      }
+    });
+  } else if (opts.label) {
+    el.setAttribute("aria-label", opts.label);
   }
   return el;
 }
@@ -399,6 +412,14 @@ function renderSelf(slot, p, view) {
     r.textContent = "立直";
     info.appendChild(r);
   }
+  if (p.ippatsu) {
+    // 一発 only lasts this go-around, so it is worth shouting about.
+    const i = document.createElement("span");
+    i.className = "ippatsu-tag";
+    i.textContent = "一发";
+    i.title = "一発：这一巡内和了会加一番";
+    info.appendChild(i);
+  }
   const score = document.createElement("span");
   score.className = "score";
   score.textContent = p.score;
@@ -485,6 +506,10 @@ function renderHand(view, human) {
   const discardable = decision
     ? decision.actions.some((a) => a.Discard)
     : false;
+  // After 立直 the hand is locked: the engine offers the drawn tile and nothing
+  // else, and the UI must not suggest otherwise. Falling back to "same kind"
+  // here would light up concealed copies of the drawn tile.
+  const locked = !!me.riichi;
 
   // The drawn tile is rendered separately, slightly offset.
   let hand = (me.hand || []).slice();
@@ -497,7 +522,9 @@ function renderHand(view, human) {
   const clickTile = (tile) => () => {
     const act = findDiscardAction(tile, riichiMode);
     if (!act) {
-      toast(riichiMode ? "这张牌不能立直" : "这张牌现在不能打出");
+      toast(locked
+        ? "立直后只能打出刚摸到的这张"
+        : (riichiMode ? "这张牌不能立直" : "这张牌现在不能打出"));
       return;
     }
     riichiMode = false;
@@ -505,10 +532,11 @@ function renderHand(view, human) {
   };
 
   hand.forEach((t) => {
-    const canPlay = discardable && !!findDiscardAction(t, riichiMode);
+    const canPlay = !locked && discardable && !!findDiscardAction(t, riichiMode);
     handEl.appendChild(tileEl(t, {
       clickable: canPlay,
       disabled: discardable && !canPlay,
+      label: (riichiMode ? "立直并打出 " : "打出 ") + tileName(t),
       onClick: clickTile(t),
     }));
   });
@@ -518,6 +546,7 @@ function renderHand(view, human) {
       clickable: canPlay,
       disabled: discardable && !canPlay,
       extra: "drawn",
+      label: (riichiMode ? "立直并打出刚摸到的 " : "打出刚摸到的 ") + tileName(drawn),
       onClick: clickTile(drawn),
     }));
   }
@@ -532,7 +561,19 @@ function renderHand(view, human) {
   } else {
     info.textContent = "";
   }
-  document.getElementById("furiten-flag").classList.toggle("hidden", !me.furiten);
+  // 振听 has three flavours and they end differently: 同巡振聴 clears on your next
+  // draw, 立直振聴 lasts the round, and 捨て牌振聴 until the wait changes.
+  const furitenFlag = document.getElementById("furiten-flag");
+  furitenFlag.classList.toggle("hidden", !me.furiten);
+  if (me.furiten) {
+    furitenFlag.textContent = me.furiten_riichi
+      ? "立直振听" : (me.furiten_temp ? "同巡振听" : "舍牌振听");
+    furitenFlag.title = me.furiten_riichi
+      ? "立直振听：立直期间放弃过和牌，本局不能再荣和"
+      : (me.furiten_temp
+        ? "同巡振听：这一巡放弃过和牌，下次摸牌后解除"
+        : "舍牌振听：自己的弃牌里有听的牌，换听前不能荣和");
+  }
 }
 
 /// Turn the riichi declaration on or off, refusing when the engine has not
@@ -556,9 +597,15 @@ function findDiscardAction(tile, wantRiichi) {
     (a) => a.Discard && !!a.Discard.riichi === wantRiichi && a.Discard.tile === tile
   );
   if (exact) return exact;
-  // The engine accepts any physical copy of the same kind.
+  // The engine offers one action per tile *kind* and accepts any physical copy
+  // of it, so clicking the second of two identical normal 5m must map to the
+  // offered copy. It must not map across the aka distinction though: the red
+  // five is a different tile, and quietly throwing the normal one instead would
+  // change what the pond and the dora count show.
   return acts.find(
-    (a) => a.Discard && !!a.Discard.riichi === wantRiichi && kindOf(a.Discard.tile) === kindOf(tile)
+    (a) => a.Discard && !!a.Discard.riichi === wantRiichi
+      && kindOf(a.Discard.tile) === kindOf(tile)
+      && isAka(a.Discard.tile) === isAka(tile)
   ) || null;
 }
 
@@ -714,6 +761,12 @@ function showWin(w) {
   const title = w.from === null || w.from === undefined ? "自摸！" : "荣和！";
   let body = `<p><span class="win">${who(w.seat)}</span> 和了 ${tileName(w.tile)}</p>`;
   if (scoreLine(w.score)) body += `<p>${scoreLine(w.score)}</p>`;
+  // Dora is not a yaku, so it is listed apart from the yaku line: without this
+  // the panel says "5 番" and leaves the player guessing where they came from.
+  const bonus = [["宝牌", w.score.dora_han], ["里宝牌", w.score.ura_han], ["赤宝牌", w.score.aka_han]]
+    .filter(([, h]) => h > 0)
+    .map(([name, h]) => `${name} +${h}`);
+  if (bonus.length) body += `<p class="muted">${bonus.join("　")}</p>`;
   body += `<p>${w.score.han} 番 ${w.score.fu} 符`
     + (w.score.yakuman ? ` · 役满 ×${w.score.yakuman}` : "")
     + (w.score.is_dealer ? " · 庄家" : "") + `</p>`;
@@ -749,9 +802,10 @@ function showGameEnd(msg) {
 
 // ---------------------------------------------------------------- ui bits
 
-function overlay(title, bodyHtml) {
+function overlay(title, bodyHtml, dismiss) {
   document.getElementById("overlay-title").textContent = title;
   document.getElementById("overlay-body").innerHTML = bodyHtml;
+  document.getElementById("overlay-close").textContent = dismiss || "继续";
   document.getElementById("overlay").classList.remove("hidden");
 }
 
@@ -829,8 +883,24 @@ function showHint(msg) {
   box.appendChild(close);
 
   box.classList.remove("hidden");
+  placeHint();
   clearTimeout(box._timer);
   box._timer = setTimeout(() => box.classList.add("hidden"), 16000);
+}
+
+/// Sit the hint panel above the controls rather than on top of them. Both the
+/// call buttons and the hand are things the player has to reach, and either can
+/// be the lowest thing on screen depending on the window height.
+function placeHint() {
+  const box = document.getElementById("hint-box");
+  if (!box || box.classList.contains("hidden")) return;
+  const tops = ["action-bar", "hand-area"]
+    .map((id) => document.getElementById(id))
+    .filter((e) => e && e.getBoundingClientRect().height > 0)
+    .map((e) => e.getBoundingClientRect().top);
+  const limit = tops.length ? Math.min(...tops) : window.innerHeight - 120;
+  box.style.top = Math.round(Math.max(58, limit - box.offsetHeight - 10)) + "px";
+  box.style.bottom = "auto";
 }
 
 function toast(text) {
@@ -1005,11 +1075,30 @@ document.addEventListener("DOMContentLoaded", () => {
     send(lastRequest);
   });
   document.getElementById("btn-hint").addEventListener("click", () => send({ type: "hint" }));
+  // The panel is advice; a call button underneath it is a decision. Keep the two
+  // apart at every window size. Registered once, not per hint.
+  window.addEventListener("resize", placeHint);
   document.getElementById("btn-replays").addEventListener("click", openReplayPanel);
   document.getElementById("log-toggle").addEventListener("click", () => {
     const log = document.getElementById("log");
     const collapsed = log.classList.toggle("collapsed");
     document.getElementById("log-toggle").textContent = collapsed ? "展开" : "收起";
+  });
+  document.getElementById("keys-btn").addEventListener("click", () => {
+    overlay("操作方式", [
+      "<table>",
+      "<tr><th>操作</th><th>作用</th></tr>",
+      "<tr><td>点击手牌</td><td>打出这张牌</td></tr>",
+      "<tr><td>点击「立直」再点牌</td><td>立直宣言（只能打出能听牌的牌）</td></tr>",
+      "<tr><td>回车</td><td>打出刚摸到的牌（摸切）</td></tr>",
+      "<tr><td>R</td><td>开关立直宣言</td></tr>",
+      "<tr><td>H</td><td>让基线 AI 给出建议</td></tr>",
+      "<tr><td>N</td><td>开新对局</td></tr>",
+      "<tr><td>Esc</td><td>关闭弹窗与提示面板</td></tr>",
+      "<tr><td>Tab / 回车</td><td>纯键盘：Tab 选中按钮或手牌，回车确认</td></tr>",
+      "</table>",
+      "<p class=\"muted\">立直之后手牌会锁住，只能打出刚摸到的那张；此时也不能再吃碰杠。</p>",
+    ].join(""), "知道了");
   });
   document.getElementById("replay-close").addEventListener("click", () => {
     document.getElementById("replay-overlay").classList.add("hidden");

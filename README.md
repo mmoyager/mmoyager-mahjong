@@ -44,12 +44,20 @@ cargo build --release          # 首次约 2-3 分钟
 逐轮趋势图（含 `--accept-margin` 门槛线）、历史表、实时日志尾，以及**启动 / 停止 / 重启**后台训练循环的按钮
 （停止用 SIGTERM，循环会在当前迭代结束后写盘退出，与终端里 Ctrl-C 等价）。
 
-改完 UI 之后跑一次布局回归检查（需要 Chrome 与 pypi 里的 `websockets`，项目 venv 已有）：
+改完 UI 之后跑一次界面回归检查（需要 Chrome；项目 venv 已装 `websockets`）：
 
 ```bash
-.venv/bin/python scripts/ui_check.py fit    # 四个窗口尺寸：溢出、按钮可点、牌河朝向
-.venv/bin/python scripts/ui_check.py play   # 打完一整局东风战并收集页面异常
+.venv/bin/python scripts/ui_check.py fit     # 四个窗口尺寸：溢出、按钮可点、牌河朝向
+.venv/bin/python scripts/ui_check.py play    # 打完一整局东风战并收集页面异常
+.venv/bin/python scripts/ui_check.py riichi  # 立直后不许出现吃/碰/杠，手牌必须锁住
+.venv/bin/python scripts/ui_check.py panels  # 面板遮挡、座位盒自裁、五张宝牌、牌谱面板
 ```
+
+四个模式都是"布局/规则回归测试"，改完 UI 或规则之后应该像改完引擎之后跑 Rust 测试那样跑它们。
+
+**生成训练数据前注意**：`mmj-selfplay generate` 的数据只由 `--seed` 决定
+（每个 worker 的随机流按局重新播种），同一 seed 反复运行得到逐字节相同的文件——
+任何"改动前后各生成一份、比对 md5"的对照实验，都要先确认这一点。
 
 ### 3. 训练（可长期挂后台）
 

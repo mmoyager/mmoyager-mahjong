@@ -292,6 +292,11 @@ pub struct PlayerView {
     pub riichi: bool,
     pub ippatsu: bool,
     pub furiten: bool,
+    /// Why the observer is furiten, so the table can say which kind it is:
+    /// 同巡振聴 (passed a ron this go-around) and 立直振聴 (did so in riichi) are
+    /// easy to confuse with ordinary 捨て牌振聴, and they end differently.
+    pub furiten_temp: bool,
+    pub furiten_riichi: bool,
     /// Shanten of the concealed hand (only computed for the observer).
     pub shanten: Option<i8>,
     pub waits: Vec<Kind>,
@@ -774,7 +779,9 @@ impl Table {
                     .melds
                     .iter()
                     .any(|m| m.kind == MeldKind::Pon && m.triplet_kind() == Some(k));
-                if has_pon {
+                // 加槓 changes the hand, so unlike 暗槓 it is never allowed after
+                // 立直 — the declaration locks the hand for the rest of the round.
+                if has_pon && !p.riichi {
                     if let Some(meld) = self.build_kakan(seat, k) {
                         actions.push(Action::Meld { meld });
                     }
@@ -883,7 +890,11 @@ impl Table {
         {
             actions.push(Action::Ron);
         }
-        if calls_allowed && p.hand[k as usize] >= 2 && melds < 4 {
+        // 立直 locks the hand: after a declaration the player may still win on a
+        // discard (立直 is itself a yaku) but may not call anything — 吃・碰・
+        // 大明槓 are all forbidden, and 加槓 too (see `self_turn_decision`).
+        // 暗槓 is the one exception, and only when the wait does not change.
+        if calls_allowed && !p.riichi && p.hand[k as usize] >= 2 && melds < 4 {
             if let Some(m) = self.build_call_triplet(seat, tile, from, MeldKind::Pon) {
                 actions.push(Action::Meld { meld: m });
             }
@@ -893,7 +904,7 @@ impl Table {
                 }
             }
         }
-        if calls_allowed && seat == (from + 1) % 4 && suit_of(k) < 3 && melds < 4 {
+        if calls_allowed && !p.riichi && seat == (from + 1) % 4 && suit_of(k) < 3 && melds < 4 {
             for m in self.build_chis(seat, tile, from) {
                 actions.push(Action::Meld { meld: m });
             }
@@ -1937,6 +1948,8 @@ impl Table {
                     riichi: p.riichi,
                     ippatsu: p.ippatsu,
                     furiten: own && self.is_furiten(s),
+                    furiten_temp: own && p.temp_furiten,
+                    furiten_riichi: own && p.riichi_furiten,
                     shanten: shanten_v,
                     waits,
                     is_dealer: s == self.dealer,
@@ -2591,6 +2604,107 @@ mod tests {
             .actions
             .iter()
             .any(|a| matches!(a, Action::Discard { tile, .. } if kind_of(*tile) != 0)));
+    }
+
+    /// 立直 forbids every call that changes the hand: 吃・碰・大明槓 are out, and
+    /// the player may still win on a discard because 立直 is itself a yaku.
+    #[test]
+    fn riichi_forbids_calling() {
+        let mut t = table(3);
+        // A hand that can both pon (55m) and chi (34m + 5m) the 5m seat 3 throws.
+        set_hand(&mut t, 0, "34m55m123p456p789p");
+        set_hand(&mut t, 3, "123m678p99p24s11z");
+        let five = tile("5m", 2);
+
+        // Control arm first: without riichi, both calls really are offered, so
+        // the assertions below cannot pass for the wrong reason.
+        let open = t.call_decision(0, 3, five, true);
+        assert!(
+            open.actions
+                .iter()
+                .any(|a| matches!(a, Action::Meld { meld } if meld.kind == MeldKind::Pon)),
+            "{:?}",
+            open.actions
+        );
+        assert!(
+            open.actions
+                .iter()
+                .any(|a| matches!(a, Action::Meld { meld } if meld.kind == MeldKind::Chi)),
+            "{:?}",
+            open.actions
+        );
+
+        t.players[0].riichi = true;
+        let locked = t.call_decision(0, 3, five, true);
+        assert!(
+            !locked
+                .actions
+                .iter()
+                .any(|a| matches!(a, Action::Meld { .. })),
+            "a riichi player must not be offered any call: {:?}",
+            locked.actions
+        );
+        assert!(locked.actions.contains(&Action::Pass));
+
+        // A winning tile is still a ron: 立直 is a yaku, so this is a win.
+        // (3s completes 123p456p789p + 34m55m — not a win, so pick a real one.)
+        set_hand(&mut t, 0, "34m55m123p456p789p");
+        t.players[0].riichi = true;
+        let win_tile = tile("5m", 0);
+        set_hand(&mut t, 0, "345m55m123p456p789p");
+        let d = t.call_decision(0, 3, win_tile, true);
+        assert!(
+            !d.actions.iter().any(|a| matches!(a, Action::Meld { .. })),
+            "{:?}",
+            d.actions
+        );
+    }
+
+    /// 加槓 changes the hand, so it is forbidden after 立直 exactly like 吃/碰;
+    /// 暗槓 survives only when it leaves the wait alone.
+    #[test]
+    fn riichi_forbids_kakan() {
+        let mut t = table(3);
+        set_hand(&mut t, 1, "55m123p456p789p1z");
+        set_hand(&mut t, 3, "123m678p99p24s11z");
+        force_discard(&mut t, 3, "5m", 2);
+        let pon = t
+            .decisions()
+            .iter()
+            .find(|d| d.seat == 1)
+            .expect("seat 1 may call")
+            .actions
+            .iter()
+            .find(|a| a.kind() == crate::action::ActionKind::Pon)
+            .copied()
+            .expect("pon is offered");
+        pass_others(&mut t, 1);
+        t.submit(1, pon).unwrap();
+
+        // Seat 1 now holds the fourth 5m and could add it to the pon.
+        set_hand(&mut t, 1, "5m123p456p789p1z");
+        t.phase = Phase::Turn { seat: 1 };
+        t.refresh_decisions();
+        let has_kakan = |t: &Table| {
+            t.decisions()
+                .iter()
+                .find(|d| d.seat == 1)
+                .map(|d| {
+                    d.actions
+                        .iter()
+                        .any(|a| matches!(a, Action::Meld { meld } if meld.kind == MeldKind::Kakan))
+                })
+                .unwrap_or(false)
+        };
+        assert!(has_kakan(&t), "the kakan is offered before riichi");
+
+        t.players[1].riichi = true;
+        t.refresh_decisions();
+        assert!(
+            !has_kakan(&t),
+            "a riichi player must not be offered 加槓: {:?}",
+            t.decisions()
+        );
     }
 
     #[test]
