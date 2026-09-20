@@ -237,7 +237,7 @@ pub struct Control {
 /// step and writing its state: the same guarantee Ctrl-C gives in a terminal.
 pub async fn control(Json(body): Json<Control>) -> Json<Value> {
     let before = loop_pids();
-    let mut message = String::new();
+    let message: String;
 
     match body.action.as_str() {
         "stop" => {
@@ -258,9 +258,23 @@ pub async fn control(Json(body): Json<Control>) -> Json<Value> {
                 for pid in &before {
                     let _ = Command::new("kill").arg(pid.to_string()).status();
                 }
-                // Give it a moment to write its state before starting a new one,
-                // otherwise two loops race over the same state file.
-                std::thread::sleep(std::time::Duration::from_secs(6));
+                // Wait for the old loop to write its state before starting a new
+                // one, otherwise two loops race over the same state file. Yields
+                // to the runtime instead of blocking a worker thread.
+                for _ in 0..30 {
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    if loop_pids().is_empty() {
+                        break;
+                    }
+                }
+                let left = loop_pids();
+                if !left.is_empty() {
+                    return Json(json!({
+                        "ok": false,
+                        "message": format!("旧循环仍未退出（{:?}），请稍后再试", left),
+                        "pids": left,
+                    }));
+                }
             }
             let stamp = SystemTime::now()
                 .duration_since(UNIX_EPOCH)

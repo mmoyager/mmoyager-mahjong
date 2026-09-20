@@ -308,7 +308,6 @@ struct Session {
     agents: [Box<dyn Agent>; 4],
     human: u8,
     seed: u64,
-    rounds_seen: u32,
 }
 
 fn make_agent(
@@ -365,7 +364,6 @@ impl Session {
             agents,
             human: seat,
             seed,
-            rounds_seen: 0,
         }
     }
 
@@ -655,18 +653,19 @@ async fn handle_socket(socket: WebSocket, checkpoints: CheckpointSource) {
                 let Some(s) = session.as_mut() else { continue };
                 if s.table.finished {
                     send_json!(json!({ "type": "error", "message": "本局已结束，请开新局。" }));
+                    send_json!(s.state_message());
                     continue;
                 }
                 if let Err(e) = s.table.submit(s.human, action) {
+                    // The client may be showing a decision the table has already
+                    // moved past; re-send the state so it cannot stay stuck.
                     send_json!(json!({ "type": "error", "message": e }));
+                    send_json!(s.state_message());
                     continue;
                 }
                 let events = s.advance();
                 if !events.is_empty() {
                     send_json!(json!({ "type": "events", "events": events }));
-                }
-                if s.table.rounds_played != s.rounds_seen {
-                    s.rounds_seen = s.table.rounds_played;
                 }
                 if s.table.finished {
                     let replay = s.save_replay();
@@ -675,10 +674,11 @@ async fn handle_socket(socket: WebSocket, checkpoints: CheckpointSource) {
                         result["replay"] = json!(p.display().to_string());
                     }
                     send_json!(result);
-                } else {
-                    let state = s.state_message();
-                    send_json!(state);
                 }
+                // Always re-render, including on the final hand: the result
+                // overlay sits on top of the board, and the board behind it must
+                // show the finished round rather than the last decision.
+                send_json!(s.state_message());
             }
             ClientMsg::Hint => {
                 let Some(s) = session.as_ref() else { continue };

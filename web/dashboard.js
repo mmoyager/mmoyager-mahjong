@@ -11,6 +11,14 @@ const $ = (id) => document.getElementById(id);
 let timer = null;
 let lastIteration = null;
 
+/// Escape data that is about to go into innerHTML: recipes, notes and file
+/// paths are written by the loop rather than by this page.
+function esc(value) {
+  return String(value === null || value === undefined ? "" : value)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
 // ---------------------------------------------------------------- formatting
 
 function fmtScore(v) {
@@ -107,15 +115,17 @@ function renderHistory(rows) {
         : '<span class="pill no">拒绝</span>');
 
     const replicas = (r.replicas || []).map((x) => Math.round(x)).join(" / ");
+    // Recipes, notes and paths come from the loop's state file, so they are
+    // escaped rather than trusted as markup.
     tr.innerHTML =
-      "<td class='num'>" + (r.iteration ?? "") + "</td>" +
-      "<td>" + (r.recipe || "—") + "</td>" +
+      "<td class='num'>" + esc(r.iteration ?? "") + "</td>" +
+      "<td>" + esc(r.recipe || "—") + "</td>" +
       "<td class='num'>" + fmtScore(r.score) + "</td>" +
-      "<td class='num'>" + (replicas || "—") + "</td>" +
+      "<td class='num'>" + esc(replicas || "—") + "</td>" +
       "<td class='num'>" + fmtDuration(r.seconds) + "</td>" +
       "<td>" + verdict + "</td>" +
-      "<td class='mono'>" + shortPath(r.checkpoint) + "</td>" +
-      "<td class='note'>" + (r.note || "") + "</td>";
+      "<td class='mono'>" + esc(shortPath(r.checkpoint)) + "</td>" +
+      "<td class='note'>" + esc(r.note || "") + "</td>";
     body.appendChild(tr);
   }
   $("hist-note").textContent = rows.length
@@ -165,8 +175,8 @@ function renderChart(rows) {
     const color = p.promoted ? "#57d68a" : (p.partial ? "transparent" : "#ff8f8f");
     const stroke = p.partial ? "#ffc46b" : "#0b3221";
     svg += '<circle class="pt" cx="' + x(i) + '" cy="' + y(p.score) + '" r="4.5" fill="' + color +
-      '" stroke="' + stroke + '" stroke-width="2"><title>第 ' + (p.iteration ?? i) + " 轮 · " +
-      (p.recipe || "") + " · " + fmtScore(p.score) + (p.promoted ? " · 提升" : "") + "</title></circle>";
+      '" stroke="' + stroke + '" stroke-width="2"><title>第 ' + esc(p.iteration ?? i) + " 轮 · " +
+      esc(p.recipe || "") + " · " + fmtScore(p.score) + (p.promoted ? " · 提升" : "") + "</title></circle>";
   });
   svg += "</svg>";
   host.innerHTML = svg;
@@ -179,16 +189,36 @@ async function refresh() {
     const res = await fetch("/api/training", { cache: "no-store" });
     const data = await res.json();
     renderStatus(data);
-    $("ctl-msg").textContent = "";
+    // A control message is the answer to something the operator just did, so it
+    // stays until it is replaced or dismissed rather than being wiped by the
+    // next poll.
+    expireCtlMessage();
   } catch (e) {
     $("run-badge").textContent = "连不上服务";
     $("run-badge").className = "badge stopped";
   }
 }
 
+// Control feedback lives for a minute, so a fast poll cannot swallow it.
+let ctlShownAt = 0;
+
+function setCtlMessage(text) {
+  $("ctl-msg").textContent = text;
+  ctlShownAt = text ? Date.now() : 0;
+}
+
+function expireCtlMessage() {
+  const el = $("ctl-msg");
+  if (!el.textContent) return;
+  if (Date.now() - ctlShownAt > 60000) {
+    el.textContent = "";
+    ctlShownAt = 0;
+  }
+}
+
 async function control(action) {
   const labels = { start: "启动", stop: "停止", restart: "重启" };
-  $("ctl-msg").textContent = (labels[action] || action) + "中…";
+  setCtlMessage((labels[action] || action) + "中…");
   try {
     const res = await fetch("/api/training/control", {
       method: "POST",
@@ -196,9 +226,9 @@ async function control(action) {
       body: JSON.stringify({ action }),
     });
     const data = await res.json();
-    $("ctl-msg").textContent = data.message || (data.ok ? "完成" : "失败");
+    setCtlMessage(data.message || (data.ok ? "完成" : "失败"));
   } catch (e) {
-    $("ctl-msg").textContent = "请求失败：" + e;
+    setCtlMessage("请求失败：" + e);
   }
   setTimeout(refresh, 800);
 }

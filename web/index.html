@@ -47,40 +47,77 @@
   </header>
 
   <main id="table">
-    <!-- opponents are filled in by the client -->
-    <section class="seat seat-top" id="seat-top"></section>
+    <!-- the seat opposite: name/wind/score, concealed hand, melds -->
+    <section class="seat seat-across" id="seat-across"></section>
+
+    <!-- the two side seats -->
     <section class="seat seat-left" id="seat-left"></section>
     <section class="seat seat-right" id="seat-right"></section>
 
-    <section id="center">
-      <div id="center-round">
-        <div id="center-wind">东</div>
-        <div id="center-meta"></div>
-      </div>
-      <div id="dora-box">
-        <div class="label">宝牌指示牌</div>
-        <div id="dora-tiles" class="tiles"></div>
-        <div class="label" style="margin-top:8px">供托立直棒</div>
-        <div id="stick-box" class="sticks-row"></div>
-      </div>
-      <div id="log-head" class="collapsible-head">
-        <span>对局记录</span>
-        <button id="log-toggle" class="mini">收起</button>
-      </div>
-      <div id="log"></div>
-    </section>
+    <!-- The middle band is the table itself: three of the four discard ponds ring
+         the centre panel, and the fourth (yours) sits at the bottom of the ring.
+         Discards live here rather than in a list because that is how a real table
+         reads: you see who is throwing what, at a glance.
 
-    <section class="seat seat-bottom" id="seat-bottom"></section>
+         Each pond is laid out in its owner's own frame and then rotated into
+         place (0 / 270 / 180 / 90 degrees), so every player's discards read the
+         way that player threw them, exactly as on a physical table. -->
+    <div id="ring">
+      <div class="pond-slot slot-across">
+        <div class="pond-label" id="label-across"></div>
+        <div id="pond-across" class="pond-frame"><div class="pond-grid"></div></div>
+      </div>
+      <div class="pond-slot slot-left">
+        <div class="pond-label" id="label-left"></div>
+        <div id="pond-left" class="pond-frame"><div class="pond-grid"></div></div>
+      </div>
+      <div id="centre-panel">
+        <div id="centre-wind">东</div>
+        <div id="centre-round"></div>
+        <div class="centre-block">
+          <div class="label">宝牌指示牌</div>
+          <div id="dora-tiles" class="tiles"></div>
+        </div>
+        <div class="centre-block">
+          <div class="label">供托立直棒</div>
+          <div id="stick-box" class="sticks-row"></div>
+        </div>
+        <div id="centre-wall">
+          <span id="centre-wall-text"></span>
+          <div class="wall-bar"><i id="wall-fill"></i></div>
+        </div>
+      </div>
+      <div class="pond-slot slot-right">
+        <div class="pond-label" id="label-right"></div>
+        <div id="pond-right" class="pond-frame"><div class="pond-grid"></div></div>
+      </div>
+      <div class="pond-slot slot-self">
+        <div class="pond-label" id="label-self"></div>
+        <div id="pond-self" class="pond-frame"><div class="pond-grid"></div></div>
+      </div>
+    </div>
 
     <section id="action-bar"></section>
 
     <section id="hand-area">
+      <div id="seat-self"></div>
       <div id="melds-self" class="melds"></div>
       <div id="hand" class="tiles hand"></div>
       <div id="hand-info">
         <span id="shanten-info"></span>
         <span id="furiten-flag" class="flag hidden">振听</span>
       </div>
+    </section>
+
+    <section id="log-strip">
+      <div id="log-head">
+        <span>对局记录</span>
+        <!-- one line of what just happened, so the record is useful while the
+             full list is collapsed -->
+        <span id="log-latest"></span>
+        <button id="log-toggle" class="mini">展开</button>
+      </div>
+      <div id="log" class="collapsed"></div>
     </section>
   </main>
 

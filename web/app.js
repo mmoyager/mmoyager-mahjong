@@ -36,12 +36,32 @@ let botNames = ["你", "AI", "AI", "AI"];
 let riichiMode = false;
 let logs = [];
 let deltaScores = null;
-let lastRoundSeen = -1;
+
+// How each pond is turned to face its owner, indexed by relative seat
+// (0 self, 1 right, 2 across, 3 left). This is what the established clients do:
+// the side ponds read down the screen and the opposite one reads upside down,
+// because that is the direction those players threw their tiles.
+const POND_ROT = { 0: 0, 1: 270, 2: 180, 3: 90 };
 
 // ---------------------------------------------------------------- utilities
 
 function kindOf(tile) { return tile >> 2; }
 function isAka(tile) { return tile === 16 || tile === 52 || tile === 88; }
+
+/// Escape text that is about to be interpolated into innerHTML. Every string
+/// here is locally produced today (bot names, file paths, engine labels), but
+/// they reach the DOM through a file picker and the file system, so they are
+/// escaped rather than trusted.
+function esc(value) {
+  return String(value === null || value === undefined ? "" : value)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+/// A seat's display name, escaped for use inside HTML.
+function who(seat) {
+  return esc(botNames[seat] || ("座位" + seat));
+}
 
 function tileFace(tile) {
   const k = kindOf(tile);
@@ -51,9 +71,27 @@ function tileFace(tile) {
   return { text: isAka(tile) ? "0" : String(n), suit, aka: isAka(tile) };
 }
 
+// Pond tile geometry, read once from the stylesheet so the rotated pond frames
+// are sized from the same numbers the tiles are drawn with.
+const POND_TILE_W = parseFloat(
+  getComputedStyle(document.documentElement).getPropertyValue("--pond-tile-w")) || 25;
+const POND_TILE_H = parseFloat(
+  getComputedStyle(document.documentElement).getPropertyValue("--pond-tile-h")) || 34;
+const POND_GAP = parseFloat(
+  getComputedStyle(document.documentElement).getPropertyValue("--pond-gap")) || 2;
+
 function tileName(tile) {
   const f = tileFace(tile);
   return f.suit === "z" ? f.text : f.text + f.suit;
+}
+
+/// Name a tile *kind* (0-33) rather than a physical tile. Waits are kinds, and
+/// naming them through `kind * 4` would call every 5m/5p/5s wait a red five,
+/// because tiles 16/52/88 are the aka fives.
+function kindName(kind) {
+  if (kind >= 27) return HONOR_FACE[kind] || "?";
+  const n = (kind % 9) + 1;
+  return String(n) + (kind < 9 ? "m" : kind < 18 ? "p" : "s");
 }
 
 // Tile faces are the public-domain SVG set by FluffyStuff
@@ -125,28 +163,20 @@ function backRow(count, opts = {}) {
   wrap.className = "backs" + (opts.vertical ? " vertical" : "");
   for (let i = 0; i < Math.max(0, count); i++) {
     const b = document.createElement("div");
+    // The back face is painted by CSS on .back itself. A child <img> would lay
+    // out at the SVG's intrinsic 300x400 size and drag the page width open.
     b.className = "back" + (opts.small ? " small" : "");
-    const img = document.createElement("img");
-    img.src = "/tiles/Back.svg";
-    img.alt = "";
-    img.draggable = false;
-    b.appendChild(img);
     wrap.appendChild(b);
   }
   return wrap;
 }
 
-function mulberry(seed) {
-  let a = seed >>> 0;
-  return function () {
-    a |= 0; a = (a + 0x6D2B79F5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 // ---------------------------------------------------------------- networking
+
+// The last game the player asked for, so a reconnect can rebuild it instead of
+// silently starting a different one.
+let lastRequest = null;
+let reconnectTimer = null;
 
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -156,9 +186,15 @@ function connect() {
     try { msg = JSON.parse(ev.data); } catch (e) { return; }
     handle(msg);
   };
+  socket.onopen = () => {
+    // The server hands every new socket a default game; if the player had
+    // chosen seat, length or opponent, ask for it again.
+    if (lastRequest) send(lastRequest);
+  };
   socket.onclose = () => {
     toast("与服务端的连接断开，正在重连…");
-    setTimeout(connect, 1500);
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, 1500);
   };
 }
 
@@ -170,6 +206,21 @@ function handle(msg) {
   switch (msg.type) {
     case "state":
       botNames = msg.botNames || botNames;
+      // A new game (or a reconnect onto a fresh one) invalidates the scores the
+      // delta display was comparing against, or the first round would show the
+      // whole starting score as a swing.
+      if (msg.seed !== null && msg.seed !== undefined && msg.seed !== lastSeed) {
+        lastSeed = msg.seed;
+        lastScores = null;
+        lastRoundKey = null;
+        deltaScores = null;
+        riichiMode = false;
+        logs = [];
+        const logEl = document.getElementById("log");
+        if (logEl) logEl.innerHTML = "";
+        const latest = document.getElementById("log-latest");
+        if (latest) latest.textContent = "";
+      }
       state = msg;
       render();
       break;
@@ -184,6 +235,8 @@ function handle(msg) {
       break;
     case "error":
       toast(msg.message);
+      // The server re-sends the state with an error, so the board cannot stay
+      // frozen on a decision it has already moved past.
       break;
     default:
       break;
@@ -196,6 +249,8 @@ function handle(msg) {
 // rather than a jump.
 let lastScores = null;
 let lastRoundKey = null;
+let lastSeed = null;
+let deltaTimer = null;
 
 function render() {
   if (!state) return;
@@ -203,14 +258,11 @@ function render() {
   const human = state.human;
   const roundKey = view.round_wind + ":" + view.round_number + ":" + view.honba;
   if (lastRoundKey !== null && roundKey !== lastRoundKey && lastScores) {
-    // A round just ended: keep the deltas on screen for a few seconds.
+    // A round just ended: keep the deltas on screen for a few seconds. The
+    // previous timer is cancelled so a fast round cannot clear a newer delta.
     deltaScores = view.players.map((p, i) => p.score - (lastScores[i] ?? p.score));
-    setTimeout(() => { deltaScores = null; render(); }, 6000);
-  }
-  if (lastScores) {
-    view.players.forEach((p, i) => {
-      if (deltaScores && deltaScores[i] === 0) deltaScores[i] = 0;
-    });
+    if (deltaTimer) clearTimeout(deltaTimer);
+    deltaTimer = setTimeout(() => { deltaScores = null; deltaTimer = null; render(); }, 6000);
   }
   lastScores = view.players.map((p) => p.score);
   lastRoundKey = roundKey;
@@ -220,9 +272,13 @@ function render() {
   document.getElementById("honba").textContent = view.honba + " 本场";
   document.getElementById("sticks").textContent = "供托 " + view.riichi_sticks;
   document.getElementById("wall").textContent = "余 " + view.wall_remaining;
-  document.getElementById("center-wind").textContent = ROUND_WIND_FACE[view.round_wind] || "?";
-  document.getElementById("center-meta").textContent =
-    `${view.round_number}局 ${view.honba}本场 · 剩余 ${view.wall_remaining} 张`;
+  document.getElementById("centre-wind").textContent = ROUND_WIND_FACE[view.round_wind] || "?";
+  document.getElementById("centre-round").textContent =
+    `${view.round_number} 局 · ${view.honba} 本场`;
+  const wallText = document.getElementById("centre-wall-text");
+  if (wallText) wallText.textContent = `余 ${view.wall_remaining} 张`;
+  const fill = document.getElementById("wall-fill");
+  if (fill) fill.style.width = Math.max(0, Math.min(100, (view.wall_remaining / 70) * 100)) + "%";
   const stickBox = document.getElementById("stick-box");
   stickBox.innerHTML = "";
   for (let i = 0; i < Math.min(view.riichi_sticks, 12); i++) {
@@ -241,17 +297,30 @@ function render() {
   doraBox.innerHTML = "";
   view.dora_indicators.forEach((t) => doraBox.appendChild(tileEl(t, { small: true })));
 
-  // Relative seat: 0 self, 1 right (plays next), 2 across, 3 left.
+  // Relative seat: 0 self, 1 right (plays next), 2 across, 3 left. Each seat owns
+  // a box (for self, only the hand area) and a pond inside the centre ring.
   const rel = (s) => (s - human + 4) % 4;
-  const slotFor = { 0: "seat-bottom", 1: "seat-right", 2: "seat-top", 3: "seat-left" };
+  const seatSlotFor = { 0: "seat-self", 1: "seat-right", 2: "seat-across", 3: "seat-left" };
+  const pondFor = { 0: "pond-self", 1: "pond-right", 2: "pond-across", 3: "pond-left" };
+  const labelFor = { 0: "label-self", 1: "label-right", 2: "label-across", 3: "label-left" };
   const actingSeat = view.phase && view.phase.Turn ? view.phase.Turn.seat : -1;
   for (let s = 0; s < 4; s++) {
     const p = view.players[s];
-    const slot = document.getElementById(slotFor[rel(s)]);
-    if (!slot) continue;
-    slot.classList.toggle("turn", s === actingSeat);
-    if (rel(s) === 0) { renderSelf(slot, p, view); continue; }
-    renderOpponent(slot, p, view, rel(s));
+    const r = rel(s);
+    const seatSlot = document.getElementById(seatSlotFor[r]);
+    if (seatSlot) seatSlot.classList.toggle("turn", s === actingSeat);
+    if (r === 0) {
+      renderSelf(document.getElementById("seat-self"), p, view);
+    } else if (seatSlot) {
+      renderOpponent(seatSlot, p, view, r);
+    }
+    const pond = document.getElementById(pondFor[r]);
+    if (pond) renderPond(pond, p.discards, POND_ROT[r]);
+    const label = document.getElementById(labelFor[r]);
+    if (label) {
+      label.textContent = (s === human ? "你" : (botNames[s] || "对手")) +
+        (p.riichi ? " · 立直" : "");
+    }
   }
   renderHand(view, human);
   renderActions();
@@ -296,18 +365,54 @@ function renderOpponent(slot, p, view, rel) {
   slot.innerHTML = "";
   slot.appendChild(seatHead(p, view));
 
-  const concealed = p.hand_count - 3 * (p.melds ? p.melds.length : 0);
-  slot.appendChild(backRow(concealed, { vertical: view === "left" || view === "right" }));
-
+  // `hand_count` is already the number of concealed tiles: a called set has left
+  // the hand, so subtracting for melds again would show three tiles too few.
+  const vertical = rel === 1 || rel === 3;
+  slot.appendChild(backRow(p.hand_count, { vertical }));
   if (p.melds && p.melds.length) slot.appendChild(meldRow(p.melds, true));
-  slot.appendChild(pond(p.discards, view));
 }
 
+/// The observer's own seat has no box of its own: the hand area at the bottom
+/// already shows the concealed tiles, so only the score, the wind and the melds
+/// need a place here, and the discards go into the ring like everyone else's.
 function renderSelf(slot, p, view) {
+  if (!slot) return;
   slot.innerHTML = "";
-  slot.appendChild(seatHead(p, view));
-  if (p.melds && p.melds.length) slot.appendChild(meldRow(p.melds, true));
-  slot.appendChild(pond(p.discards, view));
+  const info = document.createElement("div");
+  info.className = "self-badge";
+  const wind = document.createElement("span");
+  wind.className = "wind";
+  wind.textContent = WIND_FACE[p.wind] || "?";
+  info.appendChild(wind);
+  const name = document.createElement("span");
+  name.textContent = "你";
+  info.appendChild(name);
+  if (p.is_dealer) {
+    const d = document.createElement("span");
+    d.className = "dealer-tag";
+    d.textContent = "亲";
+    info.appendChild(d);
+  }
+  if (p.riichi) {
+    const r = document.createElement("span");
+    r.className = "riichi-tag";
+    r.textContent = "立直";
+    info.appendChild(r);
+  }
+  const score = document.createElement("span");
+  score.className = "score";
+  score.textContent = p.score;
+  if (deltaScores && deltaScores[p.seat]) {
+    const d = document.createElement("span");
+    d.className = "delta " + (deltaScores[p.seat] > 0 ? "up" : "down");
+    d.textContent = (deltaScores[p.seat] > 0 ? "+" : "") + deltaScores[p.seat];
+    score.textContent = p.score + " ";
+    score.appendChild(d);
+  }
+  info.appendChild(score);
+  slot.appendChild(info);
+  // The observer's melds are rendered next to the hand, not here; `renderHand`
+  // owns that box so a call can never leave tiles invisible.
 }
 
 function meldRow(melds, small) {
@@ -322,20 +427,48 @@ function meldRow(melds, small) {
   return wrap;
 }
 
-function pond(discards, view) {
-  const wrap = document.createElement("div");
-  wrap.className = "pond";
-  const last = discards.length - 1;
+/// Fill one pond. The grid is built in the owner's own frame — six discards to a
+/// row, left to right, each new row nearer the owner — and the frame rotates it
+/// into place, so every pond reads the way that player threw it.
+///
+/// The riichi declaration tile lies sideways; if that tile is called, the next
+/// discard takes the sideways spot instead, which is what the competition rules
+/// ask for (the marker has to stay in the pond of whoever declared).
+function renderPond(frame, discards, rotDeg) {
+  const grid = frame.querySelector(".pond-grid");
+  if (!grid) return;
+  grid.innerHTML = "";
+  const n = discards.length;
+  const rows = Math.max(1, Math.min(5, Math.ceil(n / 6)));
+  const rotated = rotDeg === 90 || rotDeg === 270;
+
+  // Six to a row in the owner's frame, so the standard six-per-row pond grows
+  // away from the centre. The frame is sized to the *rotated* footprint.
+  const gridW = 6 * POND_TILE_W + 5 * POND_GAP;
+  const gridH = rows * POND_TILE_H + (rows - 1) * POND_GAP;
+  frame.style.width = (rotated ? gridH : gridW) + "px";
+  frame.style.height = (rotated ? gridW : gridH) + "px";
+  grid.style.setProperty("--rot", rotDeg + "deg");
+
+  const sideways = new Set();
+  discards.forEach((d, i) => {
+    if (!d.riichi) return;
+    sideways.add(i);
+    // The declaration was called: the next discard is the sideways one.
+    if (d.called_by !== null && d.called_by !== undefined && i + 1 < n) {
+      sideways.delete(i);
+      sideways.add(i + 1);
+    }
+  });
+
+  const last = n - 1;
   discards.forEach((d, i) => {
     let extra = "";
     if (d.called_by !== null && d.called_by !== undefined) extra += " called";
-    // 立直宣言牌 is laid sideways; that is the one convention a player reads the
-    // table by, so it is worth the rotation.
-    if (d.riichi) extra += " rot";
-    if (i === last && last >= 0) extra += " fresh";
-    wrap.appendChild(tileEl(d.tile, { small: true, extra }));
+    if (sideways.has(i)) extra += " rot";
+    if (i === last) extra += " fresh";
+    grid.appendChild(tileEl(d.tile, { small: true, extra }));
   });
-  return wrap;
 }
 
 function renderHand(view, human) {
@@ -344,6 +477,9 @@ function renderHand(view, human) {
   handEl.innerHTML = "";
   const meldsEl = document.getElementById("melds-self");
   meldsEl.innerHTML = "";
+  // Called sets are gone from `me.hand`, so without this the tiles a call took
+  // would simply vanish from the board.
+  if (me.melds && me.melds.length) meldsEl.appendChild(meldRow(me.melds, true));
 
   const decision = state.decision;
   const discardable = decision
@@ -390,7 +526,7 @@ function renderHand(view, human) {
   if (me.shanten !== null && me.shanten !== undefined && (me.hand || []).length) {
     let text = me.shanten < 0 ? "已和牌" : `向听 ${me.shanten}`;
     if (me.waits && me.waits.length) {
-      text += " · 听 " + me.waits.map((k) => tileName(k * 4)).join(" ");
+      text += " · 听 " + me.waits.map(kindName).join(" ");
     }
     info.textContent = text;
   } else {
@@ -437,6 +573,9 @@ function renderActions() {
   const bar = document.getElementById("action-bar");
   bar.innerHTML = "";
   if (!state || !state.decision) return;
+  // A finished game has no decisions left: re-showing the last ones would offer
+  // buttons the server can only reject.
+  if (state.view && state.view.finished) return;
   const acts = state.decision.actions || [];
 
   const add = (label, action, primary) => {
@@ -454,7 +593,6 @@ function renderActions() {
   if (acts.some((a) => a === "Ron")) add("荣和", "Ron", true);
   if (acts.some((a) => a === "Kyuushu")) add("九种九牌", "Kyuushu");
 
-  const kanKinds = ["Ankan", "Kakan", "Minkan"];
   acts.forEach((a) => {
     const k = actKind(a);
     if (k === "Pon") add("碰", a);
@@ -494,6 +632,12 @@ function absorbEvents(events) {
   });
   logEl.innerHTML = logs.slice(-60).map((l) => `<div class="ev">${l}</div>`).join("");
   logEl.scrollTop = logEl.scrollHeight;
+  // the newest line stays visible in the header while the list is collapsed
+  const latest = document.getElementById("log-latest");
+  if (latest) {
+    latest.innerHTML = logs.length ? logs[logs.length - 1] : "";
+    latest.title = latest.textContent || "";
+  }
 
   const lastWin = [...events].reverse().find((e) => e.Win);
   if (lastWin) showWin(lastWin.Win);
@@ -509,36 +653,45 @@ function describeEvent(e) {
   }
   if (e.Draw) {
     const d = e.Draw;
-    return `${botNames[d.seat]} 摸牌${d.rinshan ? "（岭上）" : ""}`;
+    return `${who(d.seat)} 摸牌${d.rinshan ? "（岭上）" : ""}`;
   }
   if (e.Discard) {
     const d = e.Discard;
-    return `${botNames[d.seat]} 打出 <strong>${tileName(d.tile)}</strong>`
+    return `${who(d.seat)} 打出 <strong>${tileName(d.tile)}</strong>`
       + (d.riichi ? " 并立直" : "") + (d.tsumogiri ? "（摸切）" : "（手切）");
   }
-  if (e.Riichi) return `<strong>${botNames[e.Riichi.seat]} 立直！</strong>`;
+  if (e.Riichi) return `<strong>${who(e.Riichi.seat)} 立直！</strong>`;
   if (e.Meld) {
     const m = e.Meld;
     const tiles = m.meld.tiles.slice(0, m.meld.len).map(tileName).join("");
-    return `${botNames[m.seat]} ${meldKindName(m.meld.kind)} ${tiles}`;
+    return `${who(m.seat)} ${meldKindName(m.meld.kind)} ${tiles}`;
   }
   if (e.Kan) {
     const k = e.Kan;
-    return `${botNames[k.seat]} 杠 ${tileName(k.meld.tiles[0])}`
+    return `${who(k.seat)} 杠 ${tileName(k.meld.tiles[0])}`
       + (k.dora_indicator !== null && k.dora_indicator !== undefined
         ? `（新宝牌指示牌 ${tileName(k.dora_indicator)}）` : "");
   }
+  if (e.DoraRevealed) {
+    // 加槓 turns its indicator only after the 搶槓 window closes, so it arrives
+    // on its own instead of with the kan.
+    return `新宝牌指示牌 ${tileName(e.DoraRevealed.indicator)}（加杠）`;
+  }
   if (e.Win) {
     const w = e.Win;
-    const how = w.from === null || w.from === undefined ? "自摸" : `荣和（放铳：${botNames[w.from]}）`;
-    return `<strong>${botNames[w.seat]} ${how} ${tileName(w.tile)}</strong>`
+    const how = w.from === null || w.from === undefined
+      ? "自摸" : `荣和（放铳：${who(w.from)}）`;
+    return `<strong>${who(w.seat)} ${how} ${tileName(w.tile)}</strong>`
       + ` · ${w.score.han}番${w.score.fu}符`;
   }
   if (e.Ryuukyoku) {
     const r = e.Ryuukyoku;
+    // An abortive draw (九种九牌 and friends) pays nobody, so a tenpai list
+    // there would invent a result the round never had.
     const tenpai = r.tenpai.map((t, i) => (t ? botNames[i] : null)).filter(Boolean);
+    const showTenpai = r.reason === "Exhaustive" && tenpai.length;
     return `<strong>${DRAW_REASONS[r.reason] || "流局"}</strong>`
-      + (tenpai.length ? ` · 听牌：${tenpai.join("、")}` : "");
+      + (showTenpai ? ` · 听牌：${tenpai.map(esc).join("、")}` : "");
   }
   if (e.RoundEnd) return "";
   if (e.GameEnd) return "对局结束";
@@ -552,41 +705,45 @@ function meldKindName(kind) {
 }
 
 function scoreLine(score) {
-  const parts = (score.yaku || []).map(([y, h]) => `${YAKU_NAMES[y] || y}${h > 0 ? " " + h + "番" : ""}`);
+  const parts = (score.yaku || []).map(([y, h]) =>
+    `${esc(YAKU_NAMES[y] || y)}${h > 0 ? " " + h + "番" : ""}`);
   return parts.join("、");
 }
 
 function showWin(w) {
   const title = w.from === null || w.from === undefined ? "自摸！" : "荣和！";
-  let body = `<p><span class="win">${botNames[w.seat]}</span> 和了 ${tileName(w.tile)}</p>`;
+  let body = `<p><span class="win">${who(w.seat)}</span> 和了 ${tileName(w.tile)}</p>`;
   if (scoreLine(w.score)) body += `<p>${scoreLine(w.score)}</p>`;
   body += `<p>${w.score.han} 番 ${w.score.fu} 符`
     + (w.score.yakuman ? ` · 役满 ×${w.score.yakuman}` : "")
     + (w.score.is_dealer ? " · 庄家" : "") + `</p>`;
-  body += scoreTable(w.deltas, w.seat);
+  body += scoreTable(w.deltas);
   overlay(title, body);
 }
 
 function showRyuukyoku(r) {
-  let body = `<p>${DRAW_REASONS[r.reason] || "流局"}</p>`;
-  body += `<p>听牌：${r.tenpai.map((t, i) => `${botNames[i]}${t ? " ○" : " ×"}`).join("　")}</p>`;
-  if (r.deltas && r.deltas.some((d) => d !== 0)) body += scoreTable(r.deltas, -1);
+  let body = `<p>${esc(DRAW_REASONS[r.reason] || "流局")}</p>`;
+  // Only an exhaustive draw compares hands; the abortive draws pay nobody.
+  if (r.reason === "Exhaustive") {
+    body += `<p>听牌：${r.tenpai.map((t, i) => `${who(i)}${t ? " ○" : " ×"}`).join("　")}</p>`;
+  }
+  if (r.deltas && r.deltas.some((d) => d !== 0)) body += scoreTable(r.deltas);
   overlay("流局", body);
 }
 
-function scoreTable(deltas, winner) {
+function scoreTable(deltas) {
   if (!deltas) return "";
   const rows = deltas.map((d, i) =>
-    `<tr><td>${botNames[i]}</td><td>${d > 0 ? "+" : ""}${d}</td></tr>`).join("");
+    `<tr><td>${who(i)}</td><td>${d > 0 ? "+" : ""}${d}</td></tr>`).join("");
   return `<table><tr><th>玩家</th><th>点数增减</th></tr>${rows}</table>`;
 }
 
 function showGameEnd(msg) {
   const rows = msg.ranking.map((seat, place) =>
-    `<tr><td>${place + 1} 位</td><td>${botNames[seat]}</td><td>${msg.scores[seat]}</td></tr>`).join("");
+    `<tr><td>${place + 1} 位</td><td>${who(seat)}</td><td>${msg.scores[seat]}</td></tr>`).join("");
   let body = `<p>共 ${msg.rounds} 局</p>`;
   body += `<table><tr><th>名次</th><th>玩家</th><th>终局点数</th></tr>${rows}</table>`;
-  if (msg.replay) body += `<p style="opacity:.7">牌谱已保存：${msg.replay}</p>`;
+  if (msg.replay) body += `<p style="opacity:.7">牌谱已保存：${esc(msg.replay)}</p>`;
   overlay("对局结束", body);
 }
 
@@ -836,12 +993,16 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-new").addEventListener("click", () => {
     logs = [];
     document.getElementById("log").innerHTML = "";
-    send({
+    document.getElementById("log-latest").textContent = "";
+    // Remembered so a reconnect rebuilds this game rather than the default one.
+    lastRequest = {
       type: "new_game",
       seat: parseInt(document.getElementById("sel-seat").value, 10),
       length: document.getElementById("sel-length").value,
       bot: document.getElementById("sel-bot").value,
-    });
+    };
+    // The seed changes with the game, so `handle` clears the score deltas.
+    send(lastRequest);
   });
   document.getElementById("btn-hint").addEventListener("click", () => send({ type: "hint" }));
   document.getElementById("btn-replays").addEventListener("click", openReplayPanel);

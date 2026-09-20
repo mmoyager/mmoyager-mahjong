@@ -201,7 +201,7 @@ fn biased(spec: &str) -> Option<Box<dyn Agent>> {
     Some(Box::new(CallBiasAgent::new(nn, bias)))
 }
 
-fn build(spec: &str, seed: u64, search_k: usize) -> Box<dyn Agent> {
+fn build(spec: &str, seed: u64, search_k: usize, sample: bool) -> Box<dyn Agent> {
     if let Some(a) = biased(spec) {
         return a;
     }
@@ -249,7 +249,7 @@ fn build(spec: &str, seed: u64, search_k: usize) -> Box<dyn Agent> {
             } else {
                 None
             };
-            match NnAgent::from_checkpoints(&paths, seed, false, label) {
+            match NnAgent::from_checkpoints(&paths, seed, sample, label) {
                 Ok(a) => Box::new(a.with_search(search_k)),
                 Err(e) => {
                     eprintln!("cannot load {}: {}", path, e);
@@ -322,10 +322,10 @@ fn main() {
         .map_init(
             || {
                 [
-                    build(&a, seed, search_a),
-                    build(&a, seed.wrapping_add(1), search_a),
-                    build(&b, seed.wrapping_add(1000), search_b),
-                    build(&b, seed.wrapping_add(1001), search_b),
+                    build(&a, seed, search_a, sample),
+                    build(&a, seed.wrapping_add(1), search_a, sample),
+                    build(&b, seed.wrapping_add(1000), search_b, sample),
+                    build(&b, seed.wrapping_add(1001), search_b, sample),
                 ]
             },
             |pool, game| {

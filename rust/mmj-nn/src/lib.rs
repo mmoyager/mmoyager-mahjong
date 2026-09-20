@@ -25,13 +25,13 @@
 pub mod data;
 
 use mmj_core::action::{ACTION_SPACE, Action};
-use mmj_core::danger::{danger_table_full, danger_table_full_with};
+use mmj_core::danger::danger_table_full;
 use mmj_core::hand::{
     hand_strength, shanten, tile_keep_value, ukeire_count, winning_kinds, yaku_score,
 };
 use mmj_core::meld::MeldKind;
 use mmj_core::state::{Decision, Table, Trigger};
-use mmj_core::tile::{Kind, NUM_KINDS, is_honor, kind_of};
+use mmj_core::tile::{Kind, NUM_KINDS, kind_of};
 use serde::{Deserialize, Serialize};
 use std::io::{self, Read, Write};
 use std::path::Path;

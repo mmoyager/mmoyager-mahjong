@@ -68,7 +68,6 @@ struct Args {
     seed: u64,
     batch: u64,
     hanchan: bool,
-    rules: Rules,
     hidden: Vec<usize>,
 }
 
@@ -93,7 +92,6 @@ fn parse_args() -> Args {
     let mut seed = 1u64;
     let mut batch = 256u64;
     let mut hanchan = false;
-    let mut rules = Rules::tenhou();
     let mut hidden = Net::default_shape();
 
     while let Some(a) = args.next() {
@@ -138,7 +136,7 @@ fn parse_args() -> Args {
             "--label-kind" => label_kind = val!(),
             "--seed" => seed = val!().parse().unwrap_or(1),
             "--batch" => batch = val!().parse().unwrap_or(256),
-            "--hanchan" => { hanchan = true; rules = Rules::tenhou(); }
+            "--hanchan" => hanchan = true,
             "--hidden" => {
                 hidden = val!()
                     .split(',')
@@ -173,7 +171,6 @@ fn parse_args() -> Args {
         seed,
         batch,
         hanchan,
-        rules,
         hidden,
     }
 }
