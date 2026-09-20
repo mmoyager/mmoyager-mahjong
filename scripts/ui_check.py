@@ -819,7 +819,13 @@ async def check_multi():
                 if expect_new:
                     panels.append({"title": st["panel"], "seat": st["seat"], "tiles": st["tiles"]})
                     expect_new = False
-                await b.ev("document.getElementById('overlay-close').click()")
+                # Dismiss the first panel with Esc and the second with the
+                # button: both must advance the queue rather than drop it.
+                if len(panels) == 1:
+                    await b.ev("document.dispatchEvent(new KeyboardEvent('keydown',"
+                               " {key: 'Escape', bubbles: true}))")
+                else:
+                    await b.ev("document.getElementById('overlay-close').click()")
                 expect_new = True
                 await asyncio.sleep(0.25)
                 continue
