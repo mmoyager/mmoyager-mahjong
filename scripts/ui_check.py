@@ -16,6 +16,8 @@ Two modes:
     python3 scripts/ui_check.py settle  # every ended hand shows a settlement
     python3 scripts/ui_check.py protocol # the player's own moves reach the client
     python3 scripts/ui_check.py multi    # announcements, and one panel per winner
+    python3 scripts/ui_check.py seats    # every seat, and a whole half game
+    python3 scripts/ui_check.py match    # how a match ends, and reconnect resume
 
 `fit` is the regression check for layout; `play` is the end-to-end check for
 rounds, wins, draws, calls and the final overlay; `riichi` is the rules check
@@ -103,8 +105,12 @@ PLAY_STEP = r"""
   const out = [];
   const overlay = document.getElementById('overlay');
   if (overlay && !overlay.classList.contains('hidden')) {
+    const over = document.getElementById('overlay-title').textContent === '对局结束';
     const b = document.getElementById('overlay-close');
     if (b) { b.click(); out.push('overlay-closed:' + document.getElementById('overlay-title').textContent); }
+    // A finished match has nothing to click: start another one, otherwise the
+    // loop parks on a dead table.
+    if (over) { document.getElementById('btn-new').click(); out.push('new-game'); }
     return out.join(',');
   }
   // take any call that is offered, so calls, kans and the riichi toggle all run
@@ -841,6 +847,145 @@ async def check_multi():
         return failures
 
 
+# --- seat and match-length checks -------------------------------------------
+
+SEAT_STATUS = r"""
+(() => JSON.stringify({
+  round: document.getElementById('round-name').textContent,
+  honba: document.getElementById('honba').textContent,
+  centre: document.getElementById('centre-wind').textContent,
+  wall: document.getElementById('wall').textContent,
+  wind: document.querySelector('#seat-self .wind') ? document.querySelector('#seat-self .wind').textContent : null,
+  selfLabel: document.getElementById('label-self').textContent,
+  hand: document.querySelectorAll('#hand .tile').length,
+  oppLabels: ['across','left','right'].map(s => document.getElementById('label-' + s).textContent),
+  dealerMarks: document.querySelectorAll('.seat-head.dealer').length,
+  selfDealer: !!document.querySelector('#seat-self .dealer-tag'),
+  panel: document.getElementById('overlay').classList.contains('hidden')
+      ? null : document.getElementById('overlay-title').textContent,
+  ranking: document.querySelectorAll('#overlay-body table tr').length,
+}))()"""
+
+
+async def check_seats():
+    """Play from every seat, and play a whole hanchan: the table must stay
+    consistent no matter where the observer sits, and a match must end in a
+    ranking panel rather than hanging."""
+    failures = []
+    async with Browser("1280,800") as b:
+        for seat in (0, 1, 2, 3):
+            await b.ev(f"""(() => {{
+                document.getElementById('sel-seat').value = '{seat}';
+                document.getElementById('sel-length').value = 'hanchan';
+                document.getElementById('btn-new').click(); }})()""")
+            await asyncio.sleep(1.2)
+            for _ in range(6):
+                await b.ev(SETTLE_STEP)
+                await asyncio.sleep(0.3)
+            await dismiss_panels(b)
+            st = json.loads(await b.ev(SEAT_STATUS))
+            print(f"  seat {seat}: wind={st['wind']} hand={st['hand']} self-pond={st['selfLabel']!r} "
+                  f"opponents={st['oppLabels']}")
+            if st["wind"] is None:
+                failures.append(f"seat {seat}: no wind marker for the player")
+            if not st["selfLabel"].startswith("你"):
+                failures.append(f"seat {seat}: the player's pond is labelled {st['selfLabel']!r}")
+            if st["hand"] < 13:
+                failures.append(f"seat {seat}: only {st['hand']} tiles in hand")
+            if any("你" in x for x in st["oppLabels"]):
+                failures.append(f"seat {seat}: an opponent is labelled 你: {st['oppLabels']}")
+            if st["dealerMarks"] + (1 if st["selfDealer"] else 0) != 1:
+                failures.append(f"seat {seat}: dealer marks = {st['dealerMarks']} (+self {st['selfDealer']})")
+
+        # A full half game, which also exercises 南 rounds, dealer repeats and
+        # the 撃飛 end condition.
+        await b.ev("document.getElementById('sel-seat').value = '0';"
+                   "document.getElementById('btn-new').click()")
+        await asyncio.sleep(1.5)
+        rounds, t0, final = [], time.time(), None
+        while time.time() - t0 < PLAY_SECONDS:
+            st = json.loads(await b.ev(SEAT_STATUS))
+            tag = (st["round"], st["honba"])
+            if not rounds or rounds[-1] != tag:
+                rounds.append(tag)
+            if st["panel"] == "对局结束":
+                final = st
+                break
+            await b.ev(PLAY_STEP)
+            await asyncio.sleep(0.05)
+        print(f"  half game: {len(rounds)} rounds, first={rounds[0] if rounds else None}, "
+              f"last={rounds[-1] if rounds else None}")
+        reached_south = any(r.startswith("南") for r, _ in rounds)
+        if not final:
+            failures.append("a half game never reached its final panel")
+        elif final["ranking"] < 4:
+            failures.append(f"the final ranking table has {final['ranking']} rows")
+        # A half game can end early: 撃飛 ends it as soon as somebody is below
+        # zero, and that is a legitimate finish with a ranking panel.
+        elif not reached_south:
+            print("  note: the half game ended before 南 (撃飛 or アガリやめ)")
+        if b.problems:
+            failures.append(f"{len(b.problems)} page exceptions (first: {b.problems[0]})")
+        if b.console:
+            failures.append(f"{len(b.console)} console errors (first: {b.console[0]})")
+        return failures
+
+
+# --- match-level checks -----------------------------------------------------
+
+MATCH_STATUS = r"""
+(() => JSON.stringify({
+  panel: document.getElementById('overlay').classList.contains('hidden')
+      ? null : document.getElementById('overlay-title').textContent,
+  round: document.getElementById('round-name').textContent,
+  scores: state && state.view ? state.view.players.map(p => p.score).join(',') : null,
+  seed: state ? state.seed : null,
+  hand: document.querySelectorAll('#hand .tile').length,
+}))()"""
+
+
+async def check_match():
+    """A match must end with the deciding hand settled *before* the result, and
+    a dropped socket must resume the same match rather than deal a new one."""
+    failures = []
+    async with Browser("1280,800") as b:
+        await b.ev("document.getElementById('sel-length').value = 'tonpuu';"
+                   "document.getElementById('btn-new').click()")
+        await asyncio.sleep(1.2)
+        t0, order, last = time.time(), [], None
+        while time.time() - t0 < PLAY_SECONDS:
+            st = json.loads(await b.ev(MATCH_STATUS))
+            if st["panel"] and st["panel"] != last:
+                order.append(st["panel"])
+                last = st["panel"]
+                if st["panel"] == "对局结束":
+                    break
+            await b.ev(PLAY_STEP)
+            await asyncio.sleep(0.05)
+        print(f"  panels at the end of the match: {order}")
+        if "对局结束" not in order:
+            failures.append("the match result panel never appeared")
+        elif len(order) < 2:
+            failures.append(f"the deciding hand was not settled before the result: {order}")
+
+        before = json.loads(await b.ev(MATCH_STATUS))
+        await b.ev("socket.close()")      # the client reconnects on its own
+        await asyncio.sleep(3.5)
+        after = json.loads(await b.ev(MATCH_STATUS))
+        print(f"  reconnect: round {before['round']} -> {after['round']}, "
+              f"scores {'same' if before['scores'] == after['scores'] else 'CHANGED'}")
+        if after["seed"] is None:
+            failures.append("no state arrived after the reconnect")
+        elif before["seed"] != after["seed"]:
+            failures.append(f"the reconnect started a different match: "
+                            f"{before['seed']} -> {after['seed']}")
+        if b.problems:
+            failures.append(f"{len(b.problems)} page exceptions (first: {b.problems[0]})")
+        if b.console:
+            failures.append(f"{len(b.console)} console errors (first: {b.console[0]})")
+        return failures
+
+
 async def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "fit"
     if mode == "fit":
@@ -857,8 +1002,12 @@ async def main():
         failures = await check_protocol()
     elif mode == "multi":
         failures = await check_multi()
+    elif mode == "seats":
+        failures = await check_seats()
+    elif mode == "match":
+        failures = await check_match()
     else:
-        sys.exit(f"unknown mode {mode!r}; use fit, play, riichi, panels, settle, protocol or multi")
+        sys.exit(f"unknown mode {mode!r}; use fit, play, riichi, panels, settle, protocol, multi, seats or match")
     if failures:
         print("\nFAILED:")
         for f in failures:
