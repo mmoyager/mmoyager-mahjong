@@ -1294,9 +1294,14 @@ impl Table {
         for p in self.players.iter_mut() {
             p.ippatsu = false;
         }
-        self.total_kans += 1;
-        self.kan_owners.push(seat);
-        self.wall.on_kan();
+        // 加槓 counts only once the 搶槓 window closes, in `finish_kakan`. If a
+        // player robs it the kan never happened, so counting here would leave a
+        // phantom dora indicator behind — and score it for the robber.
+        if reveal_dora {
+            self.total_kans += 1;
+            self.kan_owners.push(seat);
+            self.wall.on_kan();
+        }
         let dora = if reveal_dora {
             self.wall
                 .dora_indicator((self.total_kans - 1) as usize)
@@ -1318,9 +1323,12 @@ impl Table {
         }
     }
 
-    /// Turn the kan dora indicator that a 加槓 deferred, and run the abort
-    /// check that was postponed with it.
+    /// A 加槓 survived its 搶槓 window: count it now, turn its dora indicator
+    /// and run the abort check that was postponed with it.
     fn finish_kakan(&mut self, seat: u8) {
+        self.total_kans += 1;
+        self.kan_owners.push(seat);
+        self.wall.on_kan();
         let dora = self
             .wall
             .dora_indicator((self.total_kans - 1) as usize);
@@ -1333,7 +1341,6 @@ impl Table {
         {
             self.abort_round(DrawReason::FourKans);
         }
-        let _ = seat;
     }
 
     fn do_rinshan_draw(&mut self, seat: u8) {
@@ -2442,7 +2449,81 @@ mod tests {
         assert_eq!(t.wall.remaining(), before - 1); // the rinshan tile
         assert_eq!(t.phase, Phase::Turn { seat: 1 });
     }
+
+    /// 加槓 is only a kan once its 搶槓 window closes: a robbed 加槓 must not
+    /// leave a dora indicator behind, and must not score that dora for the
+    /// player who robbed it.
     #[test]
+    fn robbed_kakan_leaves_no_phantom_dora() {
+        let mut t = table(5);
+        set_hand(&mut t, 1, "55m123p456p789p1z");
+        // Seat 3 waits on 5m and has never discarded one, so it is not furiten.
+        set_hand(&mut t, 3, "34m456p789p11z234s");
+        force_discard(&mut t, 0, "5m", 2);
+        let pon = t
+            .decisions()
+            .iter()
+            .find(|d| d.seat == 1)
+            .expect("seat 1 may call")
+            .actions
+            .iter()
+            .find(|a| a.kind() == crate::action::ActionKind::Pon)
+            .copied()
+            .expect("pon is offered");
+        pass_others(&mut t, 1);
+        t.submit(1, pon).unwrap();
+
+        // Seat 1 now holds the fourth 5m and may add it to its pon.
+        set_hand(&mut t, 1, "5m123p456p789p1z");
+        t.phase = Phase::Turn { seat: 1 };
+        t.refresh_decisions();
+        let kakan = t
+            .decisions()
+            .iter()
+            .find(|d| d.seat == 1)
+            .expect("seat 1 has a decision")
+            .actions
+            .iter()
+            .find(|a| matches!(a, Action::Meld { meld } if meld.kind == MeldKind::Kakan))
+            .copied()
+            .expect("kakan is offered");
+
+        let indicators = t.wall.revealed_indicators();
+        t.submit(1, kakan).unwrap();
+        // The 搶槓 window is open: the added kan is not counted yet.
+        assert_eq!(t.wall.kan_count(), 0, "the kan is not final before 搶槓");
+        assert_eq!(t.wall.revealed_indicators(), indicators);
+
+        let ron = t
+            .decisions()
+            .iter()
+            .find(|d| d.seat == 3)
+            .expect("seat 3 may rob the kan")
+            .actions
+            .iter()
+            .find(|a| matches!(a, Action::Ron))
+            .copied()
+            .expect("chankan ron is offered");
+        pass_others(&mut t, 3);
+        t.submit(3, ron).unwrap();
+
+        let win = t
+            .history
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                Event::Win { seat, from, score, .. } => Some((*seat, *from, score.clone())),
+                _ => None,
+            })
+            .expect("the 搶槓 win is recorded");
+        assert_eq!(win.0, 3);
+        assert_eq!(win.1, Some(1), "the kan caller deals into the robber");
+        assert!(
+            win.2.yaku.iter().any(|&(y, _)| y == Yaku::Chankan),
+            "搶槓 must be scored as a yaku: {:?}",
+            win.2.yaku
+        );
+    }    #[test]
     fn triple_ron_aborts_and_repeats_the_dealer() {
         let mut t = table(21);
         for s in 1..4 {
