@@ -37,7 +37,10 @@ cargo build --release          # 首次约 2-3 分钟
 - 手牌右侧实时显示自己的向听与听牌，振听时亮红标
 - 「提示」按钮会让基线 AI 给出建议（推荐打什么、向听变化、进张数）
 - 「牌谱分析」按钮打开已保存牌谱的分析面板（见下）
-- 每局结束弹出结算（役种、番数、符数、点数收支），整场结束会保存牌谱到 `data/replays/`
+- **每一小局结束都有一张结算面板**：和牌时显示和牌手牌（和了牌描金）与副露、役种列表（报番）、
+  宝牌/里宝牌/赤宝牌各加几番、番符合计、谁付了多少、四家本局增减与**结算后点数**；
+  流局时列出四家听牌 ○/×，有人听牌时写明不听罚符（每人 -1000，听牌者平分）
+- 整场结束显示名次与终局点数，牌谱保存到 `data/replays/`
 - 页面底部的「对局记录」默认折叠成一行最新动态，点「展开」看全程
 
 **训练控制台**在 `http://127.0.0.1:8787/dashboard`：当前的进程与迭代号、最近一次提升的权重、
@@ -47,10 +50,12 @@ cargo build --release          # 首次约 2-3 分钟
 改完 UI 之后跑一次界面回归检查（需要 Chrome；项目 venv 已装 `websockets`）：
 
 ```bash
-.venv/bin/python scripts/ui_check.py fit     # 四个窗口尺寸：溢出、按钮可点、牌河朝向
-.venv/bin/python scripts/ui_check.py play    # 打完一整局东风战并收集页面异常
-.venv/bin/python scripts/ui_check.py riichi  # 立直后不许出现吃/碰/杠，手牌必须锁住
-.venv/bin/python scripts/ui_check.py panels  # 面板遮挡、座位盒自裁、五张宝牌、牌谱面板
+.venv/bin/python scripts/ui_check.py fit      # 四个窗口尺寸：溢出、按钮可点、牌河朝向
+.venv/bin/python scripts/ui_check.py play     # 打完一整局东风战并收集页面异常
+.venv/bin/python scripts/ui_check.py riichi   # 立直后不许出现吃/碰/杠，手牌必须锁住
+.venv/bin/python scripts/ui_check.py panels   # 面板遮挡、座位盒自裁、五张宝牌、牌谱面板
+.venv/bin/python scripts/ui_check.py protocol # 玩家自己的动作/和牌必须产生事件（秒级）
+.venv/bin/python scripts/ui_check.py settle   # 每一小局结束都有结算，且内容完整（分钟级）
 ```
 
 四个模式都是"布局/规则回归测试"，改完 UI 或规则之后应该像改完引擎之后跑 Rust 测试那样跑它们。

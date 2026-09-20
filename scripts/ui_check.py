@@ -13,15 +13,20 @@ Two modes:
     python3 scripts/ui_check.py play    # play a whole tonpuu game, catch errors
     python3 scripts/ui_check.py riichi  # after 立直 no call may be offered
     python3 scripts/ui_check.py panels  # panels, clipping and overlays
+    python3 scripts/ui_check.py settle  # every ended hand shows a settlement
+    python3 scripts/ui_check.py protocol # the player's own moves reach the client
 
 `fit` is the regression check for layout; `play` is the end-to-end check for
 rounds, wins, draws, calls and the final overlay; `riichi` is the rules check
-that a declared riichi locks the hand (no 吃/碰/杠, only the drawn tile). Both need the server running:
+that a declared riichi locks the hand (no 吃/碰/杠, only the drawn tile);
+`panels` covers overlays and clipping; `settle` checks that every hand that ends
+shows its settlement, including the ones the player ends themselves. Both need the server running:
 
     ./target/release/mmj-serve --port 8787 --checkpoint data/checkpoints/ck-ab.bin
 
 Exit status is non-zero when a check fails, so this can be run after any UI
-change the way the Rust tests are run after any engine change.
+change the way the Rust tests are run after any engine change. Modes are
+independent and may be run concurrently (each takes its own DevTools port).
 """
 
 import asyncio
@@ -39,7 +44,10 @@ except ImportError:  # pragma: no cover - environment guard
 
 URL = "http://127.0.0.1:8787/"
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-PORT = 9416
+# Derived from the pid so two checks can run at once: a shared DevTools port and
+# user-data-dir would make the second run attach to the first one's browser and
+# die when that run closed it. UI_CHECK_PORT overrides.
+PORT = int(os.environ.get("UI_CHECK_PORT", 9416 + (os.getpid() % 400)))
 SIZES = ["1600,1000", "1440,900", "1280,800", "1152,720"]
 PLAY_SECONDS = 420
 
@@ -505,6 +513,227 @@ async def check_panels():
         return failures
 
 
+# --- settlement checks ------------------------------------------------------
+
+# Play for the *human's own* hand-ending action: take a tsumo or a ron whenever
+# one is offered, otherwise discard. This is the path that used to end the hand
+# without any settlement, because the server dropped the events of the player's
+# own move.
+SETTLE_STEP = r"""
+(() => {
+  const overlay = document.getElementById('overlay');
+  if (overlay && !overlay.classList.contains('hidden')) {
+    const over = document.getElementById('overlay-title').textContent === '对局结束';
+    document.getElementById('overlay-close').click();
+    if (over) { document.getElementById('btn-new').click(); return 'new-game'; }
+    return 'closed';
+  }
+  const btns = [...document.getElementById('action-bar').querySelectorAll('button')];
+  const win = btns.find(b => /^自摸/.test(b.textContent.trim()));
+  if (win) { win.click(); return 'tsumo'; }
+  const ron = btns.find(b => /^荣和/.test(b.textContent.trim()));
+  if (ron) { ron.click(); return 'ron'; }
+  const pass = btns.find(b => b.textContent.trim() === '跳过');
+  if (pass) { pass.click(); return 'pass'; }
+
+  // Play the hand the way the baseline recommends, so the human actually wins
+  // sometimes: clicking the first tile at random never reaches a win. One hint
+  // per decision, consumed once, and wait for it rather than guessing — asking
+  // on every poll swamps the endpoint, and discarding while waiting throws the
+  // advice away.
+  const box = document.getElementById('hint-box');
+  const clickable = [...document.querySelectorAll('#hand .tile.clickable')];
+  const sig = document.getElementById('round-name').textContent + '|'
+    + document.getElementById('wall').textContent + '|'
+    + clickable.map(e => e.getAttribute('aria-label')).join(',');
+  if (!box.classList.contains('hidden')) {
+    if (window.__hintUsedFor !== sig) {
+      const title = box.querySelector('.hint-title');
+      const m = title
+        ? title.textContent.match(/推荐：\s*(?:立直并打出|打出)?\s*(?:赤)?([0-9][mps]|[东南西北白发中])/)
+        : null;
+      if (m) {
+        const t = clickable.find(e => (e.getAttribute('aria-label') || '').endsWith(m[1]));
+        if (t) {
+          window.__hintUsedFor = sig;
+          box.classList.add('hidden');
+          t.click();
+          return 'hint-play:' + m[1];
+        }
+      }
+    }
+    // The advice was unusable (a call, a kan, or already consumed). Discard
+    // something rather than stalling the hand: a stuck player blocks every
+    // other seat, and then no hand ever ends and nothing is checked.
+    box.classList.add('hidden');
+    if (clickable.length) {
+      window.__hintUsedFor = sig;
+      clickable[0].click();
+      return 'fallback-discard';
+    }
+    return 'hint-dropped';
+  }
+  if (clickable.length) {
+    const asked = window.__askedFor;
+    if (asked && asked.sig === sig && Date.now() - asked.at < 700) {
+      return 'waiting';
+    }
+    window.__askedFor = { sig, at: Date.now() };
+    document.getElementById('btn-hint').click();
+    return 'ask-hint';
+  }
+  const discard = document.getElementById('btn-discard');
+  if (discard && !discard.disabled) { discard.click(); return 'discard'; }
+  return 'idle';
+})()"""
+
+SETTLE_STATUS = r"""
+(() => {
+  const open = !document.getElementById('overlay').classList.contains('hidden');
+  const body = document.getElementById('overlay-body');
+  return JSON.stringify({
+    open,
+    title: document.getElementById('overlay-title').textContent,
+    text: body.textContent.replace(/\s+/g, ' ').trim().slice(0, 300),
+    tiles: body.querySelectorAll('.tile').length,
+    rows: body.querySelectorAll('table tr').length,
+    round: document.getElementById('round-name').textContent,
+  });
+})()"""
+
+
+async def check_settle():
+    """Every hand that ends must show a settlement — including the ones the
+    player ends themselves. That last case is the one the server got wrong: it
+    used to drop the events produced by the player's own action, so a tsumo, a
+    ron or a final discard went straight to the next hand with no settlement."""
+    failures = []
+    stats = {"own-tsumo": 0, "own-ron": 0, "own-draw": 0, "bot-win": 0,
+             "draw": 0, "draw-paid": 0, "panels": 0}
+    async with Browser("1440,900") as b:
+        await b.new_game("tonpuu")
+        t0 = time.time()
+        pending = None
+        while time.time() - t0 < PLAY_SECONDS:
+            # Read the board *first*: SETTLE_STEP dismisses any open panel, so
+            # polling after it would never see a settlement.
+            after = json.loads(await b.ev(SETTLE_STATUS))
+            if after["open"]:
+                stats["panels"] = stats.get("panels", 0) + 1
+                own = pending is not None
+                title = after["title"]
+                if title == "流局":
+                    stats["own-draw" if own else "draw"] += 1
+                    if "听牌" not in after["text"]:
+                        failures.append(f"draw settlement does not list tenpai: {after['text']}")
+                    if "○" in after["text"]:
+                        stats["draw-paid"] += 1
+                        if "罚符" not in after["text"]:
+                            failures.append(f"draw with tenpai does not mention 罚符: {after['text']}")
+                        if after["rows"] < 4:
+                            failures.append(f"draw with tenpai has no score table: {after['text']}")
+                    elif "不听" not in after["text"]:
+                        failures.append(f"all-noten draw does not say so: {after['text']}")
+                elif title in ("自摸！", "荣和！"):
+                    key = ("own-" + pending) if own else "bot-win"
+                    stats[key] = stats.get(key, 0) + 1
+                    if "番" not in after["text"]:
+                        failures.append(f"win settlement has no han: {after['text']}")
+                    if after["rows"] < 4:
+                        failures.append(f"win settlement has no score table: {after['text']}")
+                    if after["tiles"] == 0:
+                        failures.append(f"win settlement shows no hand ({title}): {after['text']}")
+                step = str(await b.ev(SETTLE_STEP))   # dismiss the panel
+                pending = None
+                await asyncio.sleep(0.05)
+                continue
+            step = str(await b.ev(SETTLE_STEP))
+            if step in ("tsumo", "ron", "discard"):
+                # The player's own move can end the hand, and that is the path
+                # this check exists for.
+                pending = step
+            await asyncio.sleep(0.05 if step != "idle" else 0.2)
+
+        print(f"  settlements: {stats}")
+        # Winning a hand ourselves cannot be forced, so these are reported but
+        # not failed: `protocol` mode pins the mechanism that used to lose them.
+        if stats["own-tsumo"] + stats["own-ron"] == 0:
+            print("  note: no hand was won by us in this run")
+        if stats["own-draw"] == 0:
+            print("  note: no hand ended on our own discard in this run")
+        if b.problems:
+            failures.append(f"{len(b.problems)} page exceptions (first: {b.problems[0]})")
+        if b.console:
+            failures.append(f"{len(b.console)} console errors (first: {b.console[0]})")
+        return failures
+
+
+# --- protocol checks (fast, no browser) -------------------------------------
+
+async def check_protocol():
+    """The messages the client needs in order to show a settlement at all.
+
+    This is the cheap, deterministic half of the settlement story: the server
+    must send an `events` message for the *player's own* action. It used to drop
+    those (it submitted the action and ignored the events it produced), so a
+    tsumo, a ron, or a final discard went straight to the next hand with no
+    settlement and no record of the move.
+    """
+    failures = []
+    async with websockets.connect("ws://127.0.0.1:8787/ws", max_size=32 << 20) as ws:
+        await ws.send(json.dumps({"type": "new_game", "seat": 0, "length": "tonpuu", "bot": "nn"}))
+        saw_own_discard = False
+        event_msgs = 0
+        hand = 0
+        while hand < 8 and not saw_own_discard:
+            try:
+                msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=15))
+            except asyncio.TimeoutError:
+                print("  stopped waiting: the server sent nothing more")
+                break
+            if msg.get("type") == "events":
+                event_msgs += 1
+                for e in msg.get("events", []):
+                    d = e.get("Discard")
+                    if d and d.get("seat") == msg.get("human", 0):
+                        saw_own_discard = True
+            elif msg.get("type") == "state":
+                if not msg.get("decision"):
+                    continue
+                acts = msg["decision"]["actions"]
+                pick = next((a for a in acts if isinstance(a, str) and a in ("Tsumo", "Ron")), None)
+                if pick is None:
+                    pick = next((a for a in acts if isinstance(a, dict) and "Discard" in a), None)
+                if pick is None:
+                    continue
+                hand += 1
+                await ws.send(json.dumps({"type": "action", "action": pick}))
+        print(f"  events messages seen: {event_msgs}")
+        print(f"  the player's own discard was reported as an event: {saw_own_discard}")
+        if not saw_own_discard:
+            failures.append("the player's own action produced no events, so no settlement "
+                            "can be shown for a tsumo, a ron or a final discard")
+
+        # The hint payload has to be renderable: actionable label plus a ranking.
+        await ws.send(json.dumps({"type": "hint"}))
+        got = None
+        for _ in range(6):
+            m = json.loads(await asyncio.wait_for(ws.recv(), timeout=30))
+            if m.get("type") == "hint":
+                got = m
+                break
+        if got is None:
+            failures.append("no hint answer arrived")
+        else:
+            print(f"  hint: baseline={got.get('baseline')!r} "
+                  f"rows={len((got.get('net') or {}).get('top') or [])}")
+            if not got.get("baseline"):
+                failures.append("the hint carries no baseline recommendation")
+            if not got.get("text"):
+                failures.append("the hint carries no text")
+    return failures
+
+
 async def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "fit"
     if mode == "fit":
@@ -515,8 +744,12 @@ async def main():
         failures = await check_riichi()
     elif mode == "panels":
         failures = await check_panels()
+    elif mode == "settle":
+        failures = await check_settle()
+    elif mode == "protocol":
+        failures = await check_protocol()
     else:
-        sys.exit(f"unknown mode {mode!r}; use fit, play, riichi or panels")
+        sys.exit(f"unknown mode {mode!r}; use fit, play, riichi, panels, settle or protocol")
     if failures:
         print("\nFAILED:")
         for f in failures:

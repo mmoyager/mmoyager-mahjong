@@ -377,3 +377,19 @@ button:focus-visible, .tile:focus-visible, a.navlink:focus-visible, select:focus
   outline: 2px solid var(--gold); outline-offset: 2px;
 }
 .tile.clickable:focus-visible { outline-offset: 3px; }
+
+/* ---------- hand settlement (win / draw) ---------- */
+.settle-hand {
+  display: flex; flex-wrap: wrap; align-items: flex-end; gap: 2px;
+  margin: 10px 0; padding: 8px; border-radius: 8px;
+  background: rgba(0, 0, 0, 0.22);
+}
+.settle-hand .tile { --w: 25px; --h: 34px; }
+.settle-hand .tile.winning { box-shadow: 0 0 0 2px var(--gold); border-radius: 3px; }
+.settle-hand .meld { display: flex; gap: 1px; margin-left: 6px; padding-left: 6px;
+  border-left: 1px dashed rgba(255, 255, 255, 0.18); }
+.settle-yaku { color: var(--ink); line-height: 1.8; }
+.settle-total { color: var(--gold); font-weight: 700; font-size: 17px; }
+#overlay-body .up { color: #6ee7a0; }
+#overlay-body .down { color: #ff9d9d; }
+#overlay-body .muted { color: var(--muted); font-size: 13px; }

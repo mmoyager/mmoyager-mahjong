@@ -656,14 +656,24 @@ async fn handle_socket(socket: WebSocket, checkpoints: CheckpointSource) {
                     send_json!(s.state_message());
                     continue;
                 }
-                if let Err(e) = s.table.submit(s.human, action) {
-                    // The client may be showing a decision the table has already
-                    // moved past; re-send the state so it cannot stay stuck.
-                    send_json!(json!({ "type": "error", "message": e }));
-                    send_json!(s.state_message());
-                    continue;
-                }
-                let events = s.advance();
+                // The player's own action produces events too, and they matter:
+                // a tsumo, a ron, or a discard that exhausts the wall ends the
+                // hand *here*, so dropping these events meant the client never
+                // saw the Win / Ryuukyoku and could not show a settlement — and
+                // the round record was missing every one of the player's own
+                // moves.
+                let mut events = match s.table.submit(s.human, action) {
+                    Ok(ev) => ev,
+                    Err(e) => {
+                        // The client may be showing a decision the table has
+                        // already moved past; re-send the state so it cannot get
+                        // stuck.
+                        send_json!(json!({ "type": "error", "message": e }));
+                        send_json!(s.state_message());
+                        continue;
+                    }
+                };
+                events.extend(s.advance());
                 if !events.is_empty() {
                     send_json!(json!({ "type": "events", "events": events }));
                 }

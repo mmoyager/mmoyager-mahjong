@@ -36,6 +36,8 @@ let botNames = ["你", "AI", "AI", "AI"];
 let riichiMode = false;
 let logs = [];
 let deltaScores = null;
+/// The state that arrived while a settlement panel was open.
+let pendingState = null;
 
 // How each pond is turned to face its owner, indexed by relative seat
 // (0 self, 1 right, 2 across, 3 left). This is what the established clients do:
@@ -47,6 +49,55 @@ const POND_ROT = { 0: 0, 1: 270, 2: 180, 3: 90 };
 
 function kindOf(tile) { return tile >> 2; }
 function isAka(tile) { return tile === 16 || tile === 52 || tile === 88; }
+
+/// The engine labels actions compactly and in its own notation (`E` is 東, `0p`
+/// the red five, `pon5m5m5m` a call). Those strings travel to the client inside
+/// hint and analysis payloads, where a player should read 東, 赤5p and 碰 5m5m5m.
+/// Decision kinds the replay analyzer reports.
+const ANALYSIS_KINDS = { discard: "打牌", call: "鸣牌", riichi: "立直", kan: "杠" };
+
+const ENGINE_HONOR = { E: "东", S: "南", W: "西", N: "北", P: "白", F: "發", C: "中" };
+const ENGINE_MELD = { chi: "吃", pon: "碰", ankan: "暗杠", minkan: "大明杠", kakan: "加杠" };
+const ENGINE_ACTION = { tsumo: "自摸", ron: "荣和", kyuushu: "九种九牌", pass: "跳过" };
+
+/// Render one engine action label in the same words the table uses.
+function friendlyAction(label) {
+  if (!label) return "";
+  const raw = String(label).trim();
+  if (ENGINE_ACTION[raw]) return ENGINE_ACTION[raw];
+
+  let prefix = "";
+  let rest = raw;
+  if (rest.startsWith("riichi+")) {
+    prefix = "立直并打出 ";
+    rest = rest.slice("riichi+".length);
+  }
+  for (const [kind, word] of Object.entries(ENGINE_MELD)) {
+    if (rest.startsWith(kind)) {
+      return `${prefix}${word} ${tileList(rest.slice(kind.length))}`;
+    }
+  }
+  if (prefix) return prefix + tileList(rest);
+  return "打出 " + tileList(rest);
+}
+
+/// `3s0pE` (an engine tile list) -> `3s 赤5p 东`.
+function tileList(text) {
+  const out = [];
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (ENGINE_HONOR[c]) {
+      out.push(ENGINE_HONOR[c]);
+    } else if ((c === "0" || /[1-9]/.test(c)) && /[mps]/.test(text[i + 1] || "")) {
+      const suit = text[i + 1];
+      out.push(c === "0" ? "赤5" + suit : c + suit);
+      i += 1;
+    } else if (c !== " ") {
+      out.push(c);
+    }
+  }
+  return out.join(" ");
+}
 
 /// Escape text that is about to be interpolated into innerHTML. Every string
 /// here is locally produced today (bot names, file paths, engine labels), but
@@ -233,6 +284,13 @@ function handle(msg) {
         if (logEl) logEl.innerHTML = "";
         const latest = document.getElementById("log-latest");
         if (latest) latest.textContent = "";
+      }
+      // A settlement panel is modal: keep the finished hand on the board behind
+      // it instead of redrawing the next hand underneath the player while they
+      // are still reading. The state is applied when the panel is dismissed.
+      if (settlementOpen()) {
+        pendingState = msg;
+        break;
       }
       state = msg;
       render();
@@ -757,38 +815,145 @@ function scoreLine(score) {
   return parts.join("、");
 }
 
+/// The winning hand, melds included, with the winning tile marked. A settlement
+/// that only prints a number is not a settlement: this is 報番.
+function handRow(hand, melds, winTile) {
+  const row = document.createElement("div");
+  row.className = "settle-hand";
+  const winKind = winTile === null || winTile === undefined ? -1 : kindOf(winTile);
+  let marked = false;
+  (hand || []).forEach((t) => {
+    const extra = (!marked && kindOf(t) === winKind) ? " winning" : "";
+    if (extra) marked = true;
+    row.appendChild(tileEl(t, { small: true, extra }));
+  });
+  (melds || []).forEach((m) => {
+    const g = document.createElement("div");
+    g.className = "meld";
+    m.tiles.slice(0, m.len).forEach((t) => g.appendChild(tileEl(t, { small: true })));
+    row.appendChild(g);
+  });
+  return row;
+}
+
 function showWin(w) {
-  const title = w.from === null || w.from === undefined ? "自摸！" : "荣和！";
-  let body = `<p><span class="win">${who(w.seat)}</span> 和了 ${tileName(w.tile)}</p>`;
-  if (scoreLine(w.score)) body += `<p>${scoreLine(w.score)}</p>`;
+  const ron = w.from !== null && w.from !== undefined;
+  const title = ron ? "荣和！" : "自摸！";
+  const body = document.createElement("div");
+
+  const head = document.createElement("p");
+  head.innerHTML = `<span class="win">${who(w.seat)}</span> `
+    + (ron ? `荣和 <strong>${tileName(w.tile)}</strong>（放铳：${who(w.from)}）`
+           : `自摸 <strong>${tileName(w.tile)}</strong>`);
+  body.appendChild(head);
+
+  // The hand that won, so the yaku below can be checked by eye.
+  if (w.hand && w.hand.length) {
+    body.appendChild(handRow(w.hand, w.melds, w.tile));
+  }
+
+  const yaku = document.createElement("p");
+  yaku.className = "settle-yaku";
+  yaku.textContent = scoreLine(w.score) || "（无役，仅宝牌）";
+  body.appendChild(yaku);
+
   // Dora is not a yaku, so it is listed apart from the yaku line: without this
   // the panel says "5 番" and leaves the player guessing where they came from.
   const bonus = [["宝牌", w.score.dora_han], ["里宝牌", w.score.ura_han], ["赤宝牌", w.score.aka_han]]
     .filter(([, h]) => h > 0)
     .map(([name, h]) => `${name} +${h}`);
-  if (bonus.length) body += `<p class="muted">${bonus.join("　")}</p>`;
-  body += `<p>${w.score.han} 番 ${w.score.fu} 符`
-    + (w.score.yakuman ? ` · 役满 ×${w.score.yakuman}` : "")
-    + (w.score.is_dealer ? " · 庄家" : "") + `</p>`;
-  body += scoreTable(w.deltas);
-  overlay(title, body);
+  if (bonus.length) {
+    const p = document.createElement("p");
+    p.className = "muted";
+    p.textContent = bonus.join("　");
+    body.appendChild(p);
+  }
+
+  const total = document.createElement("p");
+  total.className = "settle-total";
+  total.textContent = w.score.yakuman
+    ? `役满 ×${w.score.yakuman}` + (w.score.is_dealer ? " · 庄家" : "")
+    : `${w.score.han} 番 ${w.score.fu} 符` + (w.score.is_dealer ? " · 庄家" : "");
+  body.appendChild(total);
+
+  // What each seat actually paid, then the resulting totals.
+  const paid = document.createElement("p");
+  paid.className = "muted";
+  if (ron) {
+    paid.textContent = `${who(w.from)} 支付 ${-Math.min(0, ...w.deltas)} 点`;
+  } else {
+    const others = [0, 1, 2, 3].filter((s) => s !== w.seat)
+      .map((s) => -w.deltas[s]);
+    paid.textContent = `每家支付 ${[...new Set(others)].sort((a, b) => a - b).join(" / ")} 点`;
+  }
+  if (w.riichi_sticks_taken) {
+    paid.textContent += `　·　立直棒 +${w.riichi_sticks_taken * 1000}`;
+  }
+  body.appendChild(paid);
+  body.appendChild(tableNode(scoreTable(w.deltas, true)));
+
+  overlay(title, body.innerHTML);
 }
 
 function showRyuukyoku(r) {
-  let body = `<p>${esc(DRAW_REASONS[r.reason] || "流局")}</p>`;
-  // Only an exhaustive draw compares hands; the abortive draws pay nobody.
-  if (r.reason === "Exhaustive") {
-    body += `<p>听牌：${r.tenpai.map((t, i) => `${who(i)}${t ? " ○" : " ×"}`).join("　")}</p>`;
+  const body = document.createElement("div");
+  const head = document.createElement("p");
+  head.innerHTML = `<strong>${esc(DRAW_REASONS[r.reason] || "流局")}</strong>`;
+  body.appendChild(head);
+
+  // Only an exhaustive draw compares hands; the abortive draws pay nobody, so
+  // printing tenpai there would invent a settlement that never happened.
+  const exhaustive = r.reason === "Exhaustive";
+  if (exhaustive) {
+    const list = document.createElement("p");
+    list.textContent = "听牌：" + r.tenpai
+      .map((t, i) => `${botNames[i]}${t ? " ○" : " ×"}`).join("　");
+    body.appendChild(list);
   }
-  if (r.deltas && r.deltas.some((d) => d !== 0)) body += scoreTable(r.deltas);
-  overlay("流局", body);
+  const paying = r.deltas && r.deltas.some((d) => d !== 0);
+  if (paying) {
+    const note = document.createElement("p");
+    note.className = "muted";
+    const tenpai = r.tenpai.filter(Boolean).length;
+    note.textContent = tenpai === 0
+      ? "全員不听：不支付罚符"
+      : `不听罚符：不听者每人 -1000，${tenpai} 家听牌者平分 ${tenpai * 1000} 点`;
+    body.appendChild(note);
+    body.appendChild(tableNode(scoreTable(r.deltas, true)));
+  } else if (exhaustive) {
+    const note = document.createElement("p");
+    note.className = "muted";
+    note.textContent = "全員不听：不支付罚符";
+    body.appendChild(note);
+  }
+  overlay("流局", body.innerHTML);
 }
 
-function scoreTable(deltas) {
+/// Wrap an HTML string (the settlement table) as a node, so it can be appended
+/// to a panel that is built as DOM rather than as one big innerHTML string.
+function tableNode(html) {
+  const wrap = document.createElement("div");
+  wrap.innerHTML = html;
+  return wrap;
+}
+
+/// A settlement table: what each seat gained or lost, and where they stand now.
+/// The scores shown are the totals *after* the hand, which is what a player
+/// actually wants to read at the end of a hand.
+function scoreTable(deltas, withTotals) {
   if (!deltas) return "";
-  const rows = deltas.map((d, i) =>
-    `<tr><td>${who(i)}</td><td>${d > 0 ? "+" : ""}${d}</td></tr>`).join("");
-  return `<table><tr><th>玩家</th><th>点数增减</th></tr>${rows}</table>`;
+  const before = (state && state.view && state.view.players)
+    ? state.view.players.map((p) => p.score)
+    : null;
+  const rows = deltas.map((d, i) => {
+    const total = before && before[i] !== undefined ? `<td>${before[i] + d}</td>` : "";
+    return `<tr><td>${who(i)}</td>`
+      + `<td class="${d > 0 ? "up" : (d < 0 ? "down" : "")}">${d > 0 ? "+" : ""}${d}</td>`
+      + (withTotals ? total : "") + "</tr>";
+  }).join("");
+  const head = withTotals ? "<tr><th>玩家</th><th>本局增减</th><th>结算后点数</th></tr>"
+                          : "<tr><th>玩家</th><th>点数增减</th></tr>";
+  return `<table>${head}${rows}</table>`;
 }
 
 function showGameEnd(msg) {
@@ -801,6 +966,19 @@ function showGameEnd(msg) {
 }
 
 // ---------------------------------------------------------------- ui bits
+
+function settlementOpen() {
+  const o = document.getElementById("overlay");
+  return !!o && !o.classList.contains("hidden");
+}
+
+/// Show the state that was held back while a settlement was on screen.
+function applyPendingState() {
+  if (!pendingState) return;
+  state = pendingState;
+  pendingState = null;
+  render();
+}
 
 function overlay(title, bodyHtml, dismiss) {
   document.getElementById("overlay-title").textContent = title;
@@ -818,7 +996,9 @@ function showHint(msg) {
 
   const title = document.createElement("div");
   title.className = "hint-title";
-  title.textContent = msg.text ? msg.text.split("\n")[0] : "提示";
+  title.textContent = msg.text
+    ? msg.text.split("\n")[0].replace(/推荐：\s*(.*)$/, (_, a) => "推荐：" + friendlyAction(a))
+    : "提示";
   box.appendChild(title);
 
   const net = msg.net;
@@ -838,7 +1018,7 @@ function showHint(msg) {
       bar.style.width = Math.max(4, Math.round((row.prob / best) * 100)) + "%";
       const label = document.createElement("span");
       label.className = "hint-label";
-      label.textContent = row.label;
+      label.textContent = friendlyAction(row.label);
       const pct = document.createElement("span");
       pct.className = "hint-pct mono";
       pct.textContent = (row.prob * 100).toFixed(1) + "%";
@@ -1037,14 +1217,17 @@ function renderAnalysis(a) {
       .slice(0, 6)
       .map(
         (o) =>
-          `<span class="opt${o.chosen ? " chosen" : ""}">${o.label} ${(o.prob * 100).toFixed(0)}%` +
+          `<span class="opt${o.chosen ? " chosen" : ""}">${esc(friendlyAction(o.label))} ${(o.prob * 100).toFixed(0)}%` +
           (o.value !== null && o.value !== undefined ? ` <span class="muted">v${o.value >= 0 ? "+" : ""}${o.value.toFixed(2)}</span>` : "") +
           "</span>"
       )
       .join("");
     out.push(
-      `<tr><td>${d.round}</td><td class="num">${d.turn}</td><td>${d.kind}</td><td>${d.chosen}</td>` +
-        `<td>${d.top}</td><td class="num">${(d.chosen_prob * 100).toFixed(0)}%</td>` +
+      `<tr><td>${esc(d.round)}</td><td class="num">${esc(d.turn)}</td>` +
+        `<td>${esc(ANALYSIS_KINDS[d.kind] || d.kind)}</td>` +
+        `<td>${esc(friendlyAction(d.chosen))}</td>` +
+        `<td>${esc(friendlyAction(d.top))}</td>` +
+        `<td class="num">${(d.chosen_prob * 100).toFixed(0)}%</td>` +
         `<td class="num">${(d.top_prob * 100).toFixed(0)}%</td><td>${opts}</td></tr>`
     );
   });
@@ -1074,7 +1257,15 @@ document.addEventListener("DOMContentLoaded", () => {
     // The seed changes with the game, so `handle` clears the score deltas.
     send(lastRequest);
   });
-  document.getElementById("btn-hint").addEventListener("click", () => send({ type: "hint" }));
+  // The hint costs a network evaluation and a baseline search on the server, so
+  // ignore repeat presses instead of queueing them.
+  let hintAskedAt = 0;
+  document.getElementById("btn-hint").addEventListener("click", () => {
+    const now = Date.now();
+    if (now - hintAskedAt < 400) return;
+    hintAskedAt = now;
+    send({ type: "hint" });
+  });
   // The panel is advice; a call button underneath it is a decision. Keep the two
   // apart at every window size. Registered once, not per hint.
   window.addEventListener("resize", placeHint);
@@ -1109,6 +1300,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   document.getElementById("overlay-close").addEventListener("click", () => {
     document.getElementById("overlay").classList.add("hidden");
+    applyPendingState();
   });
 
   // Keyboard play, because clicking fourteen tiles with a mouse is worse than it
@@ -1130,13 +1322,14 @@ document.addEventListener("DOMContentLoaded", () => {
     } else if (key === "r") {
       toggleRiichi();
     } else if (key === "h") {
-      send({ type: "hint" });
+      document.getElementById("btn-hint").click();
     } else if (key === "n") {
       document.getElementById("btn-new").click();
     } else if (key === "escape") {
       document.getElementById("hint-box").classList.add("hidden");
       document.getElementById("overlay").classList.add("hidden");
       document.getElementById("replay-overlay").classList.add("hidden");
+      applyPendingState();
     }
   });
 

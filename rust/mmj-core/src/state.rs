@@ -245,6 +245,13 @@ pub enum Event {
         score: ScoreResult,
         deltas: [i32; 4],
         riichi_sticks_taken: u32,
+        /// The winner's concealed tiles, winning tile included, and their melds.
+        /// A settlement that only says "3 番" tells the player nothing about
+        /// *which* hand won; these make 報番 possible.
+        #[serde(default)]
+        hand: Vec<Tile>,
+        #[serde(default)]
+        melds: Vec<Meld>,
     },
     Ryuukyoku {
         reason: DrawReason,
@@ -1579,6 +1586,14 @@ impl Table {
             self.riichi_sticks = 0;
         }
         for (seat, from, tile, score) in &winners {
+            // A ron win takes the tile from the discard pile, so the winning
+            // hand is the concealed tiles *plus* it; a tsumo already holds it.
+            let mut hand = self.players[*seat as usize].hand_tiles.clone();
+            if from.is_some() {
+                hand.push(*tile);
+                hand.sort_unstable();
+            }
+            let melds = self.players[*seat as usize].melds.clone();
             self.push_event(Event::Win {
                 seat: *seat,
                 from: *from,
@@ -1586,6 +1601,8 @@ impl Table {
                 score: score.clone(),
                 deltas: total_deltas,
                 riichi_sticks_taken: stick_taken,
+                hand,
+                melds,
             });
         }
         let dealer_won = winners.iter().any(|(s, _, _, _)| *s == self.dealer);
@@ -1649,6 +1666,10 @@ impl Table {
                         score,
                         deltas: total,
                         riichi_sticks_taken: 0,
+                        // 流し満貫 is a draw-time settlement: there is no
+                        // winning tile, but the hand is still worth showing.
+                        hand: self.players[seat as usize].hand_tiles.clone(),
+                        melds: self.players[seat as usize].melds.clone(),
                     });
                 }
                 let dealer_nagashi = nagashi.contains(&self.dealer);
