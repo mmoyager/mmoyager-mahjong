@@ -88,7 +88,16 @@ function renderStatus(data) {
   $("cmd").textContent = data.command || "";
   $("log-path").textContent = data.log_file || "";
 
-  renderChart(st.iterations || []);
+  // The history mixes two scales: the current loop stores a margin over the
+  // incumbent (a few hundred points at most), older rows stored an absolute
+  // average near 25 000. Plotting both together flattened the real trend into a
+  // single line, so each row is labelled with its own scale.
+  const rows = (st.iterations || []).map((r) =>
+    Object.assign({}, r, { scale: rowScale(r.score) }));
+  const scored = rows.filter((r) => r.scale);
+  const scale = scored.length && scored[scored.length - 1].scale === "absolute"
+    ? "absolute" : "margin";
+  renderChart(rows, scale);
   renderHistory(st.iterations || []);
   renderLog(data.log_file, data.log_tail || []);
 
@@ -108,11 +117,15 @@ function renderHistory(rows) {
     const tr = document.createElement("tr");
     if (r.promoted) tr.className = "promoted";
 
-    const verdict = r.promoted
-      ? '<span class="pill ok">提升</span>'
-      : (r.partial
-        ? '<span class="pill early">提前停止</span>'
-        : '<span class="pill no">拒绝</span>');
+    // A row with no score was never evaluated (older protocols recorded a
+    // stage without one); calling that "拒绝" reads as a measured rejection.
+    const verdict = typeof r.score !== "number"
+      ? '<span class="pill wait">未评测</span>'
+      : (r.promoted
+        ? '<span class="pill ok">提升</span>'
+        : (r.partial
+          ? '<span class="pill early">提前停止</span>'
+          : '<span class="pill no">拒绝</span>'));
 
     const replicas = (r.replicas || []).map((x) => Math.round(x)).join(" / ");
     // Recipes, notes and paths come from the loop's state file, so they are
@@ -140,12 +153,29 @@ function renderLog(path, lines) {
   if (atBottom) el.scrollTop = el.scrollHeight;
 }
 
+/// Which scale a history row is on: `null` when it was never evaluated,
+/// `"absolute"` for an average score near the starting 25 000, `"margin"` for
+/// the current protocol's difference against the incumbent.
+function rowScale(score) {
+  if (typeof score !== "number") return null;
+  return Math.abs(score) > 1000 ? "absolute" : "margin";
+}
+
 /// A sparkline of the per-iteration score, with the accept bar drawn in.
-function renderChart(rows) {
+///
+/// The history mixes two protocols: early rows stored an *absolute* average
+/// score (about 24 700-25 600) and the current loop stores a *margin* over the
+/// incumbent (-400..+400). Plotting both on one axis squashed the real trend
+/// into a single pixel, so only the rows that share the current scale are
+/// plotted, and the dropped ones are named on the panel.
+function renderChart(rows, scale) {
   const host = $("chart");
-  const pts = rows.filter((r) => typeof r.score === "number");
+  const all = rows.filter((r) => typeof r.score === "number");
+  const pts = all.filter((r) => r.scale === scale);
+  const dropped = all.length - pts.length;
   if (pts.length < 2) {
-    host.innerHTML = '<p class="muted">至少需要两轮迭代才能画趋势。</p>';
+    host.innerHTML = '<p class="muted">至少需要两轮同尺度的迭代才能画趋势（当前尺度：'
+      + esc(scale) + "）。</p>";
     return;
   }
   const W = 1000, H = 220, PAD = 34;
@@ -163,9 +193,11 @@ function renderChart(rows) {
     svg += '<line class="grid-line" x1="' + PAD + '" x2="' + (W - PAD) + '" y1="' + y(v) + '" y2="' + y(v) + '"/>';
     svg += '<text class="axis-text" x="4" y="' + (y(v) + 4) + '">' + Math.round(v) + "</text>";
   }
-  // the accept bar (score must be >= 60 under --accept-on direct)
-  svg += '<line class="zero-line" x1="' + PAD + '" x2="' + (W - PAD) + '" y1="' + y(60) + '" y2="' + y(60) + '"/>';
-  svg += '<text class="axis-text" x="' + (W - PAD - 62) + '" y="' + (y(60) - 5) + '">门槛 +60</text>';
+  if (scale === "margin") {
+    // The accept bar: a candidate needs a margin of at least +60 to be kept.
+    svg += '<line class="zero-line" x1="' + PAD + '" x2="' + (W - PAD) + '" y1="' + y(60) + '" y2="' + y(60) + '"/>';
+    svg += '<text class="axis-text" x="' + (W - PAD - 62) + '" y="' + (y(60) - 5) + '">门槛 +60</text>';
+  }
   svg += '<line class="zero-line" x1="' + PAD + '" x2="' + (W - PAD) + '" y1="' + y(0) + '" y2="' + y(0) + '"/>';
 
   const path = pts.map((p, i) => (i ? "L" : "M") + x(i) + " " + y(p.score)).join(" ");
@@ -180,6 +212,13 @@ function renderChart(rows) {
   });
   svg += "</svg>";
   host.innerHTML = svg;
+  const note = $("trend-note");
+  if (note) {
+    note.textContent = `每点是一轮已评测的迭代（绿=被采纳，灰=未过门槛，空心=提前停止）`
+      + `；尺度：${scale === "margin" ? "相对在位者的分差（--accept-on direct）" : "绝对平均分"}`
+      + `，共 ${pts.length} 轮`
+      + (dropped ? `，另有 ${dropped} 轮属于旧协议的另一种尺度，未画入` : "");
+  }
 }
 
 // ---------------------------------------------------------------- networking

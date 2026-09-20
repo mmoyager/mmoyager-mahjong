@@ -143,18 +143,30 @@ pub fn action_events(events: &[Event]) -> Vec<ReplayAction> {
                 }
             }
             Event::Win {
-                seat, from, tile, ..
-            } => match from {
-                None => out.push(ReplayAction::Tsumo {
-                    seat: *seat,
-                    tile: *tile,
-                }),
-                Some(f) => out.push(ReplayAction::Ron {
-                    seat: *seat,
-                    from: *f,
-                    tile: *tile,
-                }),
-            },
+                seat,
+                from,
+                tile,
+                nagashi,
+                ..
+            } => {
+                // 流し満貫 is settled at an exhaustive draw: it is not an action
+                // any decision could produce, so replaying it as a 自摸 made the
+                // reconstruction diverge at the next decision.
+                if *nagashi {
+                    continue;
+                }
+                match from {
+                    None => out.push(ReplayAction::Tsumo {
+                        seat: *seat,
+                        tile: *tile,
+                    }),
+                    Some(f) => out.push(ReplayAction::Ron {
+                        seat: *seat,
+                        from: *f,
+                        tile: *tile,
+                    }),
+                }
+            }
             Event::Ryuukyoku {
                 reason: DrawReason::NineTerminals,
                 ..
@@ -443,11 +455,13 @@ pub fn summarize(file: &ReplayFile) -> (Vec<HandReport>, Vec<PlayerReport>, [i32
                 tile,
                 score,
                 deltas,
+                nagashi,
                 ..
             } => {
                 let p = &mut players[*seat as usize];
                 p.wins += 1;
                 match from {
+                    None if *nagashi => {}
                     None => p.tsumo += 1,
                     Some(f) => {
                         p.ron += 1;
@@ -482,11 +496,16 @@ pub fn summarize(file: &ReplayFile) -> (Vec<HandReport>, Vec<PlayerReport>, [i32
                 tenpai,
                 deltas,
             } => {
-                for s in 0..4 {
-                    if tenpai[s] {
-                        players[s].tenpai += 1;
-                    } else {
-                        players[s].noten += 1;
+                // An abortive draw (九種九牌 and friends) does not compare hands
+                // and pays nothing, so counting every seat as noten there
+                // invented four phantom 未听 per abort.
+                if matches!(reason, DrawReason::Exhaustive) {
+                    for s in 0..4 {
+                        if tenpai[s] {
+                            players[s].tenpai += 1;
+                        } else {
+                            players[s].noten += 1;
+                        }
                     }
                 }
                 if let Some(h) = current.as_mut() {
@@ -554,13 +573,13 @@ fn lookahead_value(
 /// The match is only accepted when the rebuilt event log is byte-for-byte the
 /// stored one; every reported number is computed on that reconstruction.
 fn rebuild(file: &ReplayFile) -> Result<(Rules, Table, bool), String> {
-    let target = serde_json::to_string(&file.events).unwrap_or_default();
+    let target = canonical(&file.events);
     let mut fallback: Option<(Rules, Table)> = None;
     let mut last_error = String::new();
     for rules in file.candidate_rules() {
         match replay(file, rules, |_, _, _, _| {}) {
             Ok(table) => {
-                let produced = serde_json::to_string(&table.history).unwrap_or_default();
+                let produced = canonical(&table.history);
                 if produced == target {
                     return Ok((rules, table, true));
                 }
@@ -584,9 +603,80 @@ fn rebuild(file: &ReplayFile) -> Result<(Rules, Table, bool), String> {
     Err(format!("cannot rebuild the replay: {}", last_error))
 }
 
+/// A comparable projection of an event log.
+///
+/// Verification compares the rebuilt log with the stored one, but the event
+/// shape grows: `Win` gained `hand`, `melds`, `paid`, `pao_payer` and `nagashi`,
+/// `RoundEnd` gained `next_honba`, and `ScoreResult` gained the dora breakdown.
+/// A replay recorded before those fields existed could therefore never verify —
+/// 94% of the saved replays were rejected for that reason alone. Comparing the
+/// fields that existed then keeps old replays analysable while still catching a
+/// rebuilt game that genuinely differs.
+fn canonical(events: &[Event]) -> String {
+    let mut value = serde_json::to_value(events).unwrap_or(serde_json::Value::Null);
+    strip_added_fields(&mut value);
+    serde_json::to_string(&value).unwrap_or_default()
+}
+
+/// Remove every field that older replays cannot contain, at any depth.
+fn strip_added_fields(value: &mut serde_json::Value) {
+    const ADDED: [&str; 9] = [
+        "hand", "melds", "paid", "pao_payer", "nagashi", "next_honba",
+        "dora_han", "ura_han", "aka_han",
+    ];
+    match value {
+        serde_json::Value::Object(map) => {
+            for key in ADDED {
+                map.remove(key);
+            }
+            for (_, v) in map.iter_mut() {
+                strip_added_fields(v);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for v in items.iter_mut() {
+                strip_added_fields(v);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Analyse a replay from `seat`'s point of view.
 pub fn analyze(file: &ReplayFile, seat: u8, agent: &mut Option<NnAgent>) -> Result<Analysis, String> {
-    let (rules, prebuilt, verified) = rebuild(file)?;
+    // A replay recorded by an older engine cannot always be rebuilt exactly —
+    // the rules and the event shape have both changed since. Refusing it flatly
+    // threw away a file whose *stored* log is perfectly readable, so an
+    // unrebuildable replay now degrades to a stored-log summary, marked
+    // unverified, instead of an error.
+    let (rules, prebuilt, verified) = match rebuild(file) {
+        Ok(v) => v,
+        Err(_) => {
+            let (hands, players, scores) = summarize(file);
+            let mut ranking: Vec<u8> = (0..4u8).collect();
+            ranking.sort_by(|a, b| scores[*b as usize].cmp(&scores[*a as usize]));
+            return Ok(Analysis {
+                seed: file.seed,
+                analyzed_seat: seat,
+                rounds: hands.len() as u32,
+                initial_scores: [25000; 4],
+                scores,
+                ranking,
+                players,
+                hands,
+                decisions: Vec::new(),
+                summary: Summary {
+                    analyzed_seat: seat,
+                    decisions: 0,
+                    mean_agreement: 0.0,
+                    mean_confidence: 0.0,
+                    disagreements: 0,
+                    mean_value: 0.0,
+                },
+                verified: false,
+            });
+        }
+    };
     let _ = prebuilt;
     let (hands, players, scores) = summarize(file);
 

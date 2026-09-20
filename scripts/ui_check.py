@@ -537,6 +537,21 @@ async def check_panels():
         print(f"  replay panel: open={rep['open']} saved replays={rep['options']}")
         if not rep["open"]:
             failures.append("the replay panel did not open")
+        if rep["options"] > 0:
+            # Analysing one replay must produce a panel: either a precisely
+            # rebuilt game or the stored-log summary marked as such. An old file
+            # used to be refused outright, which left the whole panel useless.
+            await b.ev("document.getElementById('replay-run').click()")
+            await asyncio.sleep(6)
+            an = json.loads(await b.ev("""JSON.stringify({
+                status: document.getElementById('replay-status').textContent,
+                body: document.getElementById('replay-body').textContent.length,
+                headings: document.querySelectorAll('#replay-body h3').length})"""))
+            print(f"  replay analysis: status={an['status']!r} body={an['body']} chars")
+            if "失败" in an["status"]:
+                failures.append(f"analysing a saved replay failed: {an['status']}")
+            if an["body"] < 50:
+                failures.append("the replay analysis panel is empty")
 
         if b.problems:
             failures.append(f"{len(b.problems)} page exceptions (first: {b.problems[0]})")

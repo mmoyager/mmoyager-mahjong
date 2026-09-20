@@ -252,10 +252,14 @@ pub enum Event {
         hand: Vec<Tile>,
         #[serde(default)]
         melds: Vec<Meld>,
-        /// What this winner was paid, sticks included. `deltas` is the whole
-        /// table for the hand and is the same in every winner's event.
+        /// What this winner was paid for the hand (riichi sticks excluded:
+        /// `riichi_sticks_taken` reports those). `deltas` is the whole table for
+        /// the hand and is the same in every winner's event.
         #[serde(default)]
         paid: i32,
+        /// 責任払い: the seat that pays the whole hand, when pao applies.
+        #[serde(default)]
+        pao_payer: Option<u8>,
         /// 流し満貫 is settled at an exhaustive draw and has no winning tile.
         #[serde(default)]
         nagashi: bool,
@@ -269,6 +273,9 @@ pub enum Event {
         scores: [i32; 4],
         next_dealer: u8,
         honba: u32,
+        /// The honba the next round will carry (0 unless the dealer repeats).
+        #[serde(default)]
+        next_honba: u32,
     },
     GameEnd {
         scores: [i32; 4],
@@ -383,6 +390,14 @@ pub struct Table {
     any_call: bool,
     total_kans: u8,
     kan_owners: Vec<u8>,
+    /// Bumped every time a round starts. A kan compares it before and after its
+    /// own bookkeeping: if it changed, the kan aborted the round and the
+    /// replacement draw must not happen (in `abort_round`'s pump the next round
+    /// has already begun, so a boolean flag would be stale by then).
+    round_seq: u32,
+    /// An abortive draw whose condition this discard created but which must wait
+    /// for the call window to close (a ron on the same tile wins first).
+    pending_abort: Option<DrawReason>,
     first_discard_kind: Option<Kind>,
     four_winds_run: u8,
     outcome: RoundOutcome,
@@ -423,6 +438,8 @@ impl Table {
             any_call: false,
             total_kans: 0,
             kan_owners: Vec::new(),
+            round_seq: 0,
+            pending_abort: None,
             first_discard_kind: None,
             four_winds_run: 0,
             outcome: RoundOutcome::default(),
@@ -632,6 +649,8 @@ impl Table {
         self.any_call = false;
         self.total_kans = 0;
         self.kan_owners.clear();
+        self.round_seq = self.round_seq.wrapping_add(1);
+        self.pending_abort = None;
         self.first_discard_kind = None;
         self.four_winds_run = 0;
         self.outcome = RoundOutcome::default();
@@ -1091,6 +1110,7 @@ impl Table {
             }
             Action::Meld { meld } => match meld.kind {
                 MeldKind::Ankan => {
+                    let before = self.round_seq;
                     self.do_ankan(seat, meld);
                     let kind = meld.triplet_kind().unwrap();
                     if self.any_kokushi_rob(seat, kind) {
@@ -1102,7 +1122,10 @@ impl Table {
                             tile: meld.tiles[0],
                             awaiting,
                         };
-                    } else {
+                    } else if self.round_seq == before {
+                        // A round that aborted on this kan has already moved on:
+                        // drawing now would hand out a tile in the next round,
+                        // out of turn.
                         self.do_rinshan_draw(seat);
                     }
                     self.pump();
@@ -1148,6 +1171,21 @@ impl Table {
     // ---- discard and calls ----------------------------------------------
 
     fn do_discard(&mut self, seat: u8, tile: Tile, riichi: bool) {
+        // The action was validated by kind, so `tile` may be a copy the player
+        // does not actually hold. Record the copy that leaves the hand: a log
+        // naming an unheld tile cannot be replayed (the replay verifier rebuilds
+        // the game from the actions and compares the events).
+        let tile = {
+            let hand = &self.players[seat as usize].hand_tiles;
+            if hand.contains(&tile) {
+                tile
+            } else {
+                hand.iter()
+                    .copied()
+                    .find(|&t| kind_of(t) == kind_of(tile))
+                    .unwrap_or(tile)
+            }
+        };
         let drawn = self.players[seat as usize].drawn;
         let tsumogiri = drawn.map(kind_of) == Some(kind_of(tile));
         {
@@ -1206,14 +1244,17 @@ impl Table {
                 && self.four_winds_run == 4
                 && self.players.iter().all(|p| p.discards.len() == 1)
             {
-                self.abort_round(DrawReason::FourWinds);
-                return;
+                // Deferred, not immediate: this discard can still be ronned, and
+                // a win takes precedence over the abort (Tenhou does the same).
+                self.pending_abort = Some(DrawReason::FourWinds);
             }
         }
         // 四家立直
-        if self.rules.abort_four_riichi && self.players.iter().all(|p| p.riichi) {
-            self.abort_round(DrawReason::FourRiichi);
-            return;
+        if self.rules.abort_four_riichi
+            && self.players.iter().all(|p| p.riichi)
+            && self.pending_abort.is_none()
+        {
+            self.pending_abort = Some(DrawReason::FourRiichi);
         }
 
         // 海底牌 cannot be called: only 栄和 remains possible on the last
@@ -1230,6 +1271,10 @@ impl Table {
         }
         self.submitted = [None; 4];
         if awaiting.is_empty() {
+            if let Some(reason) = self.pending_abort.take() {
+                self.abort_round(reason);
+                return;
+            }
             self.turn = (seat + 1) % 4;
             self.phase = Phase::Draw {
                 seat: (seat + 1) % 4,
@@ -1488,6 +1533,11 @@ impl Table {
         }
 
         let Some((seat, meld)) = chosen else {
+            // Nobody called and nobody won: now the abort can stand.
+            if let Some(reason) = self.pending_abort.take() {
+                self.abort_round(reason);
+                return;
+            }
             self.turn = (from + 1) % 4;
             self.phase = Phase::Draw {
                 seat: (from + 1) % 4,
@@ -1526,8 +1576,9 @@ impl Table {
         self.update_pao(seat, from);
 
         if meld.kind == MeldKind::Minkan {
+            let before = self.round_seq;
             self.register_kan(seat, meld, true, true);
-            if self.phase == Phase::RoundEnd {
+            if self.round_seq != before {
                 return;
             }
             self.do_rinshan_draw(seat);
@@ -1550,6 +1601,7 @@ impl Table {
         // were paid the other's money.
         let mut paid = vec![0i32; winners.len()];
         let mut sticks_each = vec![0u32; winners.len()];
+        let mut pao_payer = vec![None; winners.len()];
 
         for (i, (seat, from, _tile, score)) in winners.iter().enumerate() {
             let mut d = [0i32; 4];
@@ -1583,6 +1635,9 @@ impl Table {
                         d = [0i32; 4];
                         d[payer as usize] -= paid;
                         d[*seat as usize] += paid;
+                        // 責任払い: everything is on this seat, not on whoever
+                        // discarded the winning tile.
+                        pao_payer[i] = Some(payer);
                     }
                 }
             }
@@ -1592,6 +1647,10 @@ impl Table {
             }
             paid[i] = d[*seat as usize];
             sticks_each[i] = if i == 0 { stick_taken } else { 0 };
+            if i == 0 && sticks > 0 {
+                // `d` already includes the sticks; report the hand payment only.
+                paid[i] -= sticks as i32 * 1000;
+            }
             for s in 0..4 {
                 self.players[s].score += d[s];
                 total_deltas[s] += d[s];
@@ -1617,6 +1676,7 @@ impl Table {
                 deltas: total_deltas,
                 riichi_sticks_taken: sticks_each[i],
                 paid: paid[i],
+                pao_payer: pao_payer[i],
                 hand,
                 melds,
                 nagashi: false,
@@ -1684,6 +1744,7 @@ impl Table {
                         deltas: total,
                         riichi_sticks_taken: 0,
                         paid: d[seat as usize],
+                        pao_payer: None,
                         // 流し満貫 is a draw-time settlement: there is no
                         // winning tile, but the hand is still worth showing.
                         hand: self.players[seat as usize].hand_tiles.clone(),
@@ -1753,10 +1814,15 @@ impl Table {
     }
 
     fn finish_round(&mut self) {
+        // `honba` is the round that just ended; the next one adds a honba when
+        // the dealer repeats. A log line that reads "下一局 N 本场" needs the
+        // second number, not the first — they differ by exactly this.
+        let next_honba = if self.outcome.dealer_repeat { self.honba + 1 } else { 0 };
         self.push_event(Event::RoundEnd {
             scores: self.scores(),
             next_dealer: self.dealer,
             honba: self.honba,
+            next_honba,
         });
     }
 
@@ -1812,8 +1878,9 @@ impl Table {
                             self.apply_win(vec![(seat, Some(from), tile, score)]);
                             continue;
                         }
+                        let before = self.round_seq;
                         self.finish_kakan(from);
-                        if self.phase == Phase::RoundEnd {
+                        if self.round_seq != before {
                             continue;
                         }
                         self.do_rinshan_draw(from);
@@ -2757,6 +2824,93 @@ mod tests {
             "a riichi player must not be offered 加槓: {:?}",
             t.decisions()
         );
+    }
+
+    /// 四槓散了 ends the round, and the kan that caused it must not go on to
+    /// draw: `abort_round` pumps straight into the next round, so the caller's
+    /// phase check could never see RoundEnd and an extra 嶺上牌 landed in the
+    /// new round, out of turn, leaving that seat a tile heavy.
+    #[test]
+    fn a_four_kans_abort_does_not_draw_into_the_next_round() {
+        let mut t = table(11);
+        // Three kans by other seats are already on the books, so the next one
+        // is the fourth and not all by the same player.
+        t.total_kans = 3;
+        t.kan_owners = vec![1, 1, 2];
+        let honba_before = t.honba;
+        set_hand(&mut t, 3, "1111m234p567p99s1z");
+        t.phase = Phase::Turn { seat: 3 };
+        t.refresh_decisions();
+        let ankan = t
+            .decisions()
+            .iter()
+            .find(|d| d.seat == 3)
+            .expect("seat 3 has a decision")
+            .actions
+            .iter()
+            .find(|a| matches!(a, Action::Meld { meld } if meld.kind == MeldKind::Ankan))
+            .copied()
+            .expect("the 暗槓 is offered");
+        t.submit(3, ankan).unwrap();
+
+        assert_eq!(t.honba, honba_before + 1, "途中流局 repeats the dealer");
+        assert!(
+            t.history.iter().any(|e| matches!(e, Event::Ryuukyoku { .. })),
+            "the round should have been aborted"
+        );
+        // The precise property: in the round that follows an abort there is no
+        // 嶺上 draw at all. (The dealer's normal draw is not one.)
+        let start = t
+            .history
+            .iter()
+            .rposition(|e| matches!(e, Event::RoundStart { .. }))
+            .expect("the next round started");
+        assert!(
+            !t.history[start..]
+                .iter()
+                .any(|e| matches!(e, Event::Draw { rinshan: true, .. })),
+            "the aborted kan must not draw a replacement tile in the next round"
+        );
+        assert!(t.players[3].melds.is_empty(), "the new round starts clean");
+    }
+
+    /// A ron on the discard that would trigger 四風連打 / 四家立直 wins: the abort
+    /// is deferred until the call window closes without a win.
+    #[test]
+    fn a_ron_beats_a_deferred_abort() {
+        let mut t = table(3);
+        set_hand(&mut t, 1, "123m456m678p11p23s");
+        set_hand(&mut t, 0, "123m456m678p99p24s");
+        t.pending_abort = Some(DrawReason::FourRiichi);
+        force_discard(&mut t, 0, "4s", 2);
+        pass_others(&mut t, 1);
+        t.submit(1, Action::Ron).unwrap();
+        assert!(
+            t.history.iter().any(|e| matches!(e, Event::Win { .. })),
+            "the ron must stand"
+        );
+        assert!(
+            !t.history.iter().any(|e| matches!(e, Event::Ryuukyoku { .. })),
+            "a ron preempts the abort"
+        );
+
+        // Control: with nobody able to win, the same deferral does abort.
+        let mut t = table(3);
+        set_hand(&mut t, 1, "123m456m678p11p23s");
+        set_hand(&mut t, 0, "123m456m678p99p24s");
+        t.pending_abort = Some(DrawReason::FourRiichi);
+        force_discard(&mut t, 0, "1z", 0);
+        pass_others(&mut t, 1);
+        let drawn = t
+            .history
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                Event::Ryuukyoku { reason, .. } => Some(*reason),
+                _ => None,
+            })
+            .expect("the deferred abort fires");
+        assert_eq!(drawn, DrawReason::FourRiichi);
     }
 
     #[test]

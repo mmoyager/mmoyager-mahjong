@@ -577,7 +577,7 @@ function renderHand(view, human) {
   if (me.melds && me.melds.length) meldsEl.appendChild(meldRow(me.melds, true));
 
   const decision = state.decision;
-  const discardable = decision
+  const discardable = !boardHold && !panelQueue.length && decision
     ? decision.actions.some((a) => a.Discard)
     : false;
   // After 立直 the hand is locked: the engine offers the drawn tile and nothing
@@ -697,6 +697,9 @@ function renderActions() {
   // A finished game has no decisions left: re-showing the last ones would offer
   // buttons the server can only reject.
   if (state.view && state.view.finished) return;
+  // Nor while a settlement is on screen: those buttons belong to a decision the
+  // table has already moved past.
+  if (boardHold || panelQueue.length) return;
   const acts = state.decision.actions || [];
 
   const add = (label, action, primary, extraClass) => {
@@ -873,6 +876,9 @@ function describeEvent(e) {
   }
   if (e.Win) {
     const w = e.Win;
+    if (w.nagashi) {
+      return `<strong>${who(w.seat)} 流局满贯</strong> · ${w.score.han}番`;
+    }
     const how = w.from === null || w.from === undefined
       ? "自摸" : `荣和（放铳：${who(w.from)}）`;
     return `<strong>${who(w.seat)} ${how} ${tileName(w.tile)}</strong>`
@@ -889,7 +895,8 @@ function describeEvent(e) {
   }
   if (e.RoundEnd) {
     const r = e.RoundEnd;
-    return `── 本局结束 · 下一局 ${r.honba} 本场`;
+    const next = r.next_honba === null || r.next_honba === undefined ? r.honba : r.next_honba;
+    return `── 本局结束 · 下一局 ${next} 本场（庄家：${who(r.next_dealer)}）`;
   }
   if (e.GameEnd) return "对局结束";
   return "";
@@ -975,7 +982,10 @@ function showWin(w) {
   // What each seat actually paid, then the resulting totals.
   const paid = document.createElement("p");
   paid.className = "muted";
-  if (typeof w.paid === "number" && w.paid > 0 && w.from !== null && w.from !== undefined) {
+  if (w.pao_payer !== null && w.pao_payer !== undefined) {
+    // 責任払い: the pao payer covers the whole hand, whoever discarded the tile.
+    paid.textContent = `責任払い：${who(w.pao_payer)} 支付全部 ${w.paid} 点`;
+  } else if (typeof w.paid === "number" && w.paid > 0 && w.from !== null && w.from !== undefined) {
     // What *this* winner was paid. In a double ron the hand-wide `deltas` table
     // includes the other winner's money, which is not this winner's to claim.
     paid.textContent = `${who(w.from)} 支付 ${w.paid} 点`;
@@ -1015,9 +1025,15 @@ function showRyuukyoku(r) {
     const note = document.createElement("p");
     note.className = "muted";
     const tenpai = r.tenpai.filter(Boolean).length;
-    note.textContent = tenpai === 0
-      ? "全員不听：不支付罚符"
-      : `不听罚符：不听者每人 -1000，${tenpai} 家听牌者平分 ${tenpai * 1000} 点`;
+    if (tenpai === 0) {
+      note.textContent = "全員不听：不支付罚符";
+    } else {
+      // 3000 points in total, split between the tenpai hands — which is only
+      // "1000 each" when all three of the others are noten.
+      const noten = 4 - tenpai;
+      note.textContent = `不听罚符：${noten} 家不听各 -1000（合计 ${noten * 1000} 点），`
+        + `${tenpai} 家听牌者均分（每家 +${Math.round((noten * 1000) / tenpai)} 点）`;
+    }
     body.appendChild(note);
     body.appendChild(tableNode(scoreTable(r.deltas, true)));
   } else if (exhaustive) {
@@ -1145,6 +1161,13 @@ function showHint(msg) {
     ? msg.text.split("\n")[0].replace(/推荐：\s*(.*)$/, (_, a) => "推荐：" + friendlyAction(a))
     : "提示";
   box.appendChild(title);
+
+  if (msg.baseline) {
+    const sec = document.createElement("div");
+    sec.className = "hint-sec";
+    sec.textContent = "基线推荐：" + friendlyAction(msg.baseline);
+    box.appendChild(sec);
+  }
 
   const net = msg.net;
   if (net && net.top && net.top.length) {
