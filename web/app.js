@@ -150,7 +150,9 @@ function kindName(kind) {
 // web/tiles/. They are vector, so one file serves the 22 px pond tile and the
 // 62 px hand tile. A text face is kept as a fallback so the table still reads if
 // an image ever fails to load.
-const HONOR_FILES = ["Ton", "Nan", "Shaa", "Pei", "Haku", "Hatsu", "Chun"];
+// The white dragon is the set's blank, framed tile. The pack also ships a
+// Haku.svg, but everything in it sits inside <defs> and it paints nothing.
+const HONOR_FILES = ["Ton", "Nan", "Shaa", "Pei", "Blank", "Hatsu", "Chun"];
 
 function tileFile(tile) {
   const k = kindOf(tile);
@@ -251,15 +253,27 @@ function connect() {
     handle(msg);
   };
   socket.onopen = () => {
-    // The server hands every new socket a default game; if the player had
-    // chosen seat, length or opponent, ask for it again.
-    if (lastRequest) send(lastRequest);
+    // The server hands every new socket a *new* game; re-ask for the one the
+    // player was in. The seed is what makes it the same match rather than a
+    // fresh one, so it is sent back with the request.
+    if (lastRequest) {
+      send(Object.assign({}, lastRequest, lastSeed === null ? {} : { seed: lastSeed }));
+    }
   };
   socket.onclose = () => {
     toast("与服务端的连接断开，正在重连…");
     if (reconnectTimer) clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, 1500);
   };
+}
+
+/// Turn an engine error into something a player can act on.
+function friendlyError(message) {
+  const m = String(message || "");
+  if (/no pending decision/i.test(m)) return "这一步已经过时了，请按当前牌面重新操作";
+  if (/illegal action/i.test(m)) return "这个操作现在不合法";
+  if (/已结束/.test(m)) return "本局已结束，请开新局";
+  return "操作无效：" + m;
 }
 
 function send(obj) {
@@ -288,7 +302,7 @@ function handle(msg) {
       // A settlement panel is modal: keep the finished hand on the board behind
       // it instead of redrawing the next hand underneath the player while they
       // are still reading. The state is applied when the panel is dismissed.
-      if (settlementOpen()) {
+      if (settlementOpen() || boardHold) {
         pendingState = msg;
         break;
       }
@@ -305,7 +319,9 @@ function handle(msg) {
       showHint(msg);
       break;
     case "error":
-      toast(msg.message);
+      // Engine errors are English and phrased for a developer; a player needs
+      // to know what to do about it.
+      toast(friendlyError(msg.message));
       // The server re-sends the state with an error, so the board cannot stay
       // frozen on a decision it has already moved past.
       break;
@@ -683,10 +699,11 @@ function renderActions() {
   if (state.view && state.view.finished) return;
   const acts = state.decision.actions || [];
 
-  const add = (label, action, primary) => {
+  const add = (label, action, primary, extraClass) => {
     const b = document.createElement("button");
     b.textContent = label;
     if (primary) b.className = "primary";
+    if (extraClass) b.className = (b.className ? b.className + " " : "") + extraClass;
     b.addEventListener("click", () => {
       riichiMode = false;
       send({ type: "action", action });
@@ -720,7 +737,7 @@ function renderActions() {
     bar.appendChild(b);
   }
 
-  if (acts.some((a) => a === "Pass")) add("跳过", "Pass");
+  if (acts.some((a) => a === "Pass")) add("跳过", "Pass", false, "pass");
 }
 
 // ---------------------------------------------------------------- log / events
@@ -744,10 +761,82 @@ function absorbEvents(events) {
     latest.title = latest.textContent || "";
   }
 
-  const lastWin = [...events].reverse().find((e) => e.Win);
-  if (lastWin) showWin(lastWin.Win);
-  const lastDraw = [...events].reverse().find((e) => e.Ryuukyoku);
-  if (lastDraw && !lastWin) showRyuukyoku(lastDraw.Ryuukyoku);
+  // 立直 is easy to miss — a tile that quietly lies sideways — so it gets the
+  // same shout as a win. Only when nobody won or drew in this very batch: the
+  // hand's ending is the more important news.
+  const wins = events.filter((e) => e.Win).map((e) => e.Win);
+  const draw = [...events].reverse().find((e) => e.Ryuukyoku);
+  if (!wins.length && !draw) {
+    const riichi = events.filter((e) => e.Riichi);
+    if (riichi.length) {
+      const who1 = riichi.map((e) => botNames[e.Riichi.seat] || "对手").join("、");
+      announce("立直", who1);
+    }
+    return;
+  }
+
+  // A hand ended. Hold the board on the finished hand until the last panel has
+  // been read, then let the next round's state through.
+  boardHold = true;
+  const queue = [];
+  // The announcement comes first and the settlement follows it: a big 自摸 in
+  // the middle of the table, then the panel with the hand and the yaku. Showing
+  // both at once would bury the announcement behind the panel.
+  let announceMs = 1200;
+  if (wins.length) {
+    // Settle winners in play order from the discarder: that is counter-clockwise
+    // at the table, and it is the order every ruleset describes.
+    const from = wins[0].from;
+    const order = (w) => (from === null || from === undefined ? w.seat : (w.seat - from + 4) % 4);
+    wins.slice().sort((a, b) => order(a) - order(b)).forEach((w) => queue.push({ kind: "win", data: w }));
+    if (wins.length > 1) {
+      // Two ron is the common case; three is normally aborted by the engine as
+      // 三家和了, so the third panel only appears if the rules allow it.
+      announceMs = 1400;
+      announce(wins.length === 2 ? "双响" : "三响", wins.map((w) => botNames[w.seat]).join("、"), announceMs);
+    } else {
+      const w = wins[0];
+      const ron = w.from !== null && w.from !== undefined;
+      if (w.nagashi) {
+        announce("流局满贯", botNames[w.seat] || "");
+      } else {
+        announce(ron ? "荣和" : "自摸", `${botNames[w.seat] || ""} ${tileName(w.tile)}`);
+      }
+    }
+  } else if (draw) {
+    queue.push({ kind: "draw", data: draw.Ryuukyoku });
+    announce("流局", DRAW_REASONS[draw.Ryuukyoku.reason] || "", announceMs);
+  }
+  clearTimeout(settleTimer);
+  settleTimer = setTimeout(() => enqueueSettlements(queue), announceMs);
+}
+
+let settleTimer = null;
+
+// ------------------------------------------------------- settlement queue
+
+/// True while a hand's panels (or the match result) are being read.
+/// True from the moment a hand ends until its last panel is dismissed. While it
+/// holds, the next round's state is kept back so the board stays on the hand
+/// the player is still reading about.
+let boardHold = false;
+
+function enqueueSettlements(panels) {
+  panelQueue = panelQueue.concat(panels);
+  showNextPanel();
+}
+
+/// The player acknowledged the panel on screen: show the next one, or release
+/// the board if that was the last.
+function dismissPanel() {
+  const wasSettlement = panelQueue.length > 0;
+  if (wasSettlement) panelQueue.shift();
+  document.getElementById("overlay").classList.add("hidden");
+  if (!showNextPanel()) {
+    // Nothing left to read: release the board so the next hand appears.
+    boardHold = false;
+    applyPendingState();
+  }
 }
 
 function describeEvent(e) {
@@ -798,7 +887,10 @@ function describeEvent(e) {
     return `<strong>${DRAW_REASONS[r.reason] || "流局"}</strong>`
       + (showTenpai ? ` · 听牌：${tenpai.map(esc).join("、")}` : "");
   }
-  if (e.RoundEnd) return "";
+  if (e.RoundEnd) {
+    const r = e.RoundEnd;
+    return `── 本局结束 · 下一局 ${r.honba} 本场`;
+  }
   if (e.GameEnd) return "对局结束";
   return "";
 }
@@ -838,18 +930,22 @@ function handRow(hand, melds, winTile) {
 
 function showWin(w) {
   const ron = w.from !== null && w.from !== undefined;
-  const title = ron ? "荣和！" : "自摸！";
+  const nagashi = !!w.nagashi;
+  const title = nagashi ? "流局满贯！" : (ron ? "荣和！" : "自摸！");
   const body = document.createElement("div");
 
   const head = document.createElement("p");
-  head.innerHTML = `<span class="win">${who(w.seat)}</span> `
-    + (ron ? `荣和 <strong>${tileName(w.tile)}</strong>（放铳：${who(w.from)}）`
-           : `自摸 <strong>${tileName(w.tile)}</strong>`);
+  head.innerHTML = nagashi
+    ? `<span class="win">${who(w.seat)}</span> 流局满贯（弃牌全为幺九，且无人鸣牌）`
+    : `<span class="win">${who(w.seat)}</span> `
+      + (ron ? `荣和 <strong>${tileName(w.tile)}</strong>（放铳：${who(w.from)}）`
+             : `自摸 <strong>${tileName(w.tile)}</strong>`);
   body.appendChild(head);
 
-  // The hand that won, so the yaku below can be checked by eye.
+  // The hand that won, so the yaku below can be checked by eye. 流し満貫 has no
+  // winning tile, so nothing is marked.
   if (w.hand && w.hand.length) {
-    body.appendChild(handRow(w.hand, w.melds, w.tile));
+    body.appendChild(handRow(w.hand, w.melds, nagashi ? null : w.tile));
   }
 
   const yaku = document.createElement("p");
@@ -879,7 +975,11 @@ function showWin(w) {
   // What each seat actually paid, then the resulting totals.
   const paid = document.createElement("p");
   paid.className = "muted";
-  if (ron) {
+  if (typeof w.paid === "number" && w.paid > 0 && w.from !== null && w.from !== undefined) {
+    // What *this* winner was paid. In a double ron the hand-wide `deltas` table
+    // includes the other winner's money, which is not this winner's to claim.
+    paid.textContent = `${who(w.from)} 支付 ${w.paid} 点`;
+  } else if (ron) {
     paid.textContent = `${who(w.from)} 支付 ${-Math.min(0, ...w.deltas)} 点`;
   } else {
     const others = [0, 1, 2, 3].filter((s) => s !== w.seat)
@@ -957,15 +1057,53 @@ function scoreTable(deltas, withTotals) {
 }
 
 function showGameEnd(msg) {
+  // The match is over, but the hand that decided it still has to be settled:
+  // the server sends events → game_end → state back to back, so clearing the
+  // queue here threw the final 報番 panel away before it was ever shown. Queue
+  // the match result instead, behind whatever hand is still being read.
+  clearTimeout(settleTimer);
+  boardHold = true;
   const rows = msg.ranking.map((seat, place) =>
     `<tr><td>${place + 1} 位</td><td>${who(seat)}</td><td>${msg.scores[seat]}</td></tr>`).join("");
   let body = `<p>共 ${msg.rounds} 局</p>`;
   body += `<table><tr><th>名次</th><th>玩家</th><th>终局点数</th></tr>${rows}</table>`;
   if (msg.replay) body += `<p style="opacity:.7">牌谱已保存：${esc(msg.replay)}</p>`;
-  overlay("对局结束", body);
+  panelQueue.push({ kind: "end", title: "对局结束", body });
+  showNextPanel();
+}
+
+/// Panels that are not settlements — the match result — are queued on the same
+/// list so they can never overtake a hand that has not been read yet.
+let panelQueue = [];
+
+function showNextPanel() {
+  if (!panelQueue.length) return false;
+  const p = panelQueue[0];
+  if (p.kind === "win") showWin(p.data);
+  else if (p.kind === "draw") showRyuukyoku(p.data);
+  else overlay(p.title, p.body, p.dismiss);
+  return true;
 }
 
 // ---------------------------------------------------------------- ui bits
+
+/// A short, loud announcement in the middle of the table: 立直, 自摸, 荣和,
+/// 流局. It never blocks a click and it clears itself.
+function announce(text, sub, ms) {
+  const el = document.getElementById("banner");
+  if (!el) return;
+  el.innerHTML = `<span class="banner-text">${esc(text)}</span>`
+    + (sub ? `<span class="banner-sub">${esc(sub)}</span>` : "");
+  el.classList.remove("hidden");
+  // restart the animation so two announcements in a row both animate
+  el.classList.remove("pop");
+  void el.offsetWidth;
+  el.classList.add("pop");
+  clearTimeout(bannerTimer);
+  bannerTimer = setTimeout(() => el.classList.add("hidden"), ms || 1250);
+}
+
+let bannerTimer = null;
 
 function settlementOpen() {
   const o = document.getElementById("overlay");
@@ -980,12 +1118,19 @@ function applyPendingState() {
   render();
 }
 
-function overlay(title, bodyHtml, dismiss) {
+/// Show a plain dialog. `transient` dialogs (the shortcut help) are not part of
+/// the settlement queue, so closing one must not consume a queued panel.
+function overlay(title, bodyHtml, dismiss, transient) {
   document.getElementById("overlay-title").textContent = title;
   document.getElementById("overlay-body").innerHTML = bodyHtml;
   document.getElementById("overlay-close").textContent = dismiss || "继续";
+  overlayIsTransient = !!transient;
+  overlayIsSettlement = !transient;
   document.getElementById("overlay").classList.remove("hidden");
 }
+
+let overlayIsTransient = false;
+let overlayIsSettlement = false;
 
 // The hint panel shows three things at once: the network's own ranking with its
 // probabilities, the tile-efficiency baseline's pick, and the hand's shape. They
@@ -1007,7 +1152,7 @@ function showHint(msg) {
     sec.className = "hint-sec";
     const h = document.createElement("div");
     h.className = "hint-head";
-    h.innerHTML = '<span>神经网络</span><span class="mono">' + (net.checkpoint || "") + "</span>";
+    h.innerHTML = '<span>神经网络</span><span class="mono">' + esc(net.checkpoint || "") + "</span>";
     sec.appendChild(h);
     const best = net.top[0].prob || 1;
     net.top.forEach((row) => {
@@ -1245,8 +1390,13 @@ function renderAnalysis(a) {
 document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("btn-new").addEventListener("click", () => {
     logs = [];
+    clearTimeout(settleTimer);
+    panelQueue = [];
+    boardHold = false;
+    pendingState = null;
     document.getElementById("log").innerHTML = "";
     document.getElementById("log-latest").textContent = "";
+    document.getElementById("banner").classList.add("hidden");
     // Remembered so a reconnect rebuilds this game rather than the default one.
     lastRequest = {
       type: "new_game",
@@ -1289,7 +1439,7 @@ document.addEventListener("DOMContentLoaded", () => {
       "<tr><td>Tab / 回车</td><td>纯键盘：Tab 选中按钮或手牌，回车确认</td></tr>",
       "</table>",
       "<p class=\"muted\">立直之后手牌会锁住，只能打出刚摸到的那张；此时也不能再吃碰杠。</p>",
-    ].join(""), "知道了");
+    ].join(""), "知道了", true);
   });
   document.getElementById("replay-close").addEventListener("click", () => {
     document.getElementById("replay-overlay").classList.add("hidden");
@@ -1299,8 +1449,12 @@ document.addEventListener("DOMContentLoaded", () => {
     if (name) runReplayAnalysis(name);
   });
   document.getElementById("overlay-close").addEventListener("click", () => {
-    document.getElementById("overlay").classList.add("hidden");
-    applyPendingState();
+    if (overlayIsTransient) {
+      document.getElementById("overlay").classList.add("hidden");
+      overlayIsTransient = false;
+      return;
+    }
+    dismissPanel();
   });
 
   // Keyboard play, because clicking fourteen tiles with a mouse is worse than it
@@ -1310,6 +1464,10 @@ document.addEventListener("DOMContentLoaded", () => {
     if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
     const tag = (ev.target && ev.target.tagName) || "";
     if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+    // A focused tile handles Enter itself; without this the same press threw
+    // two tiles, and the second one came back as a server error.
+    if (ev.defaultPrevented) return;
+    if (ev.target && ev.target.classList && ev.target.classList.contains("tile")) return;
     const key = ev.key.toLowerCase();
     if (key === "enter") {
       ev.preventDefault();
@@ -1327,9 +1485,17 @@ document.addEventListener("DOMContentLoaded", () => {
       document.getElementById("btn-new").click();
     } else if (key === "escape") {
       document.getElementById("hint-box").classList.add("hidden");
-      document.getElementById("overlay").classList.add("hidden");
       document.getElementById("replay-overlay").classList.add("hidden");
-      applyPendingState();
+      document.getElementById("banner").classList.add("hidden");
+      // Esc means "next": it must not drop the rest of a double ron, and while
+      // an announcement is still counting down it must not release the board
+      // early either.
+      if (overlayIsTransient) {
+        document.getElementById("overlay").classList.add("hidden");
+        overlayIsTransient = false;
+      } else if (settlementOpen() || boardHold || panelQueue.length) {
+        dismissPanel();
+      }
     }
   });
 

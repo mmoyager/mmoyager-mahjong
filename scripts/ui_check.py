@@ -15,6 +15,7 @@ Two modes:
     python3 scripts/ui_check.py panels  # panels, clipping and overlays
     python3 scripts/ui_check.py settle  # every ended hand shows a settlement
     python3 scripts/ui_check.py protocol # the player's own moves reach the client
+    python3 scripts/ui_check.py multi    # announcements, and one panel per winner
 
 `fit` is the regression check for layout; `play` is the end-to-end check for
 rounds, wins, draws, calls and the final overlay; `riichi` is the rules check
@@ -223,11 +224,25 @@ class Browser:
             await asyncio.sleep(1.1)
 
 
+async def dismiss_panels(b, tries=6):
+    """Click through any open overlay (settlements, the match result, help)."""
+    for _ in range(tries):
+        st = json.loads(await b.ev("""JSON.stringify({
+            open: !document.getElementById('overlay').classList.contains('hidden')})"""))
+        if not st["open"]:
+            return
+        await b.ev("document.getElementById('overlay-close').click()")
+        await asyncio.sleep(0.15)
+
+
 async def check_fit():
     failures = []
     async with Browser("1600,1000") as b:
         await b.new_game()
         await b.play(12)
+        # A settlement panel is modal: it covers the buttons on purpose, so it
+        # has to be dismissed before the layout underneath can be measured.
+        await dismiss_panels(b)
         for size in SIZES:
             await b.size_to(size)
             r = json.loads(await b.ev(FIT_PROBE))
@@ -337,9 +352,14 @@ RIICHI_STATUS = r"""
   return JSON.stringify({
     round: document.getElementById('round-name').textContent,
     label: document.getElementById('label-self').textContent,
-    callButtons: btns.map(b => b.textContent.trim()).filter(x => /^吃|^碰|杠/.test(x)),
+    // 暗槓 is deliberately not in this list: after 立直 it stays legal as long
+    // as the wait does not change, which the engine checks before offering it.
+    callButtons: btns.map(b => b.textContent.trim())
+      .filter(x => /^吃|^碰|大明杠|加杠/.test(x)),
     clickable: document.querySelectorAll('#hand .tile.clickable').length,
     sideways: document.querySelectorAll('#pond-self .tile.rot').length,
+    banner: document.getElementById('banner').classList.contains('hidden')
+        ? null : document.getElementById('banner').textContent,
     overlay: document.getElementById('overlay').classList.contains('hidden')
         ? null : document.getElementById('overlay-title').textContent,
   });
@@ -351,6 +371,7 @@ async def check_riichi():
     failures = []
     declared_rounds = 0
     windows = 0
+    riichi_banners = 0
     violations = []
     async with Browser("1440,900") as b:
         await b.new_game("tonpuu")
@@ -367,6 +388,8 @@ async def check_riichi():
                     declared_rounds += 1
                     print(f"  declared 立直 in {st['round']} "
                           f"(sideways tile in pond: {st['sideways']})")
+                if st.get("banner") and "立直" in st["banner"]:
+                    riichi_banners += 1
                 if declared:
                     windows += 1
                     if st["callButtons"]:
@@ -379,7 +402,10 @@ async def check_riichi():
             if declared_rounds >= 3:
                 break
             await asyncio.sleep(0.05 if step != "idle" else 0.2)
-        print(f"立直 rounds: {declared_rounds}; post-立直 observations: {windows}")
+        print(f"立直 rounds: {declared_rounds}; post-立直 observations: {windows}; "
+              f"立直 announcements seen: {riichi_banners}")
+        if riichi_banners == 0:
+            failures.append("no 立直 announcement was ever shown")
         if declared_rounds == 0:
             failures.append("never reached a 立直 declaration, so nothing was checked")
         if violations:
@@ -734,6 +760,87 @@ async def check_protocol():
     return failures
 
 
+# --- announcement and multi-winner checks -----------------------------------
+
+# A double ron cannot be waited for, so the client is handed the exact event
+# shape the server produces (the shape itself is pinned by `protocol` mode):
+# two Win events, seat 1 and seat 2, both ronning seat 0's discard.
+DOUBLE_RON = r"""
+(() => {
+  const score = {yaku: [["Riichi", 1], ["Pinfu", 1]], han: 2, fu: 30, yakuman: 0,
+                 base: 960, is_dealer: false, dora_han: 0, ura_han: 0, aka_han: 0};
+  const ev = (seat, deltas, paid, sticks) => ({Win: {seat, from: 0, tile: 52, score,
+      deltas, riichi_sticks_taken: sticks, paid, nagashi: false,
+      hand: [0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52], melds: []}});
+  handle({type: 'events', events: [ev(2, [0, -15700, 9700, 8000], 9700, 0),
+                                   ev(1, [0, -15700, 9700, 8000], 8000, 2)]});
+  return 'injected';
+})()"""
+
+ANNOUNCE_STATUS = r"""
+(() => {
+  const el = document.getElementById('banner');
+  const ov = document.getElementById('overlay');
+  return JSON.stringify({
+    banner: el.classList.contains('hidden') ? null : el.textContent,
+    bannerVisible: !el.classList.contains('hidden'),
+    panel: ov.classList.contains('hidden') ? null : document.getElementById('overlay-title').textContent,
+    seat: ov.classList.contains('hidden') ? ''
+      : ((document.getElementById('overlay-body').textContent.trim()
+          .match(/^(.+?) (?:荣和|自摸)/) || ['', ''])[1]),
+    tiles: document.querySelectorAll('#overlay-body .tile').length,
+  });
+})()"""
+
+
+async def check_multi():
+    """Announcements and the settlement of several winners, one panel each."""
+    failures = []
+    async with Browser("1440,900") as b:
+        await b.new_game("tonpuu")
+        await b.ev(DOUBLE_RON)
+        banners, panels = [], []
+        first_sight = None
+        expect_new = True
+        t0 = time.time()
+        while time.time() - t0 < 8:
+            st = json.loads(await b.ev(ANNOUNCE_STATUS))
+            if st["banner"] and st["banner"] not in banners:
+                banners.append(st["banner"])
+            if first_sight is None and (st["bannerVisible"] or st["panel"]):
+                first_sight = {"banner": st["bannerVisible"], "panel": st["panel"]}
+            if st["panel"]:
+                if expect_new:
+                    panels.append({"title": st["panel"], "seat": st["seat"], "tiles": st["tiles"]})
+                    expect_new = False
+                await b.ev("document.getElementById('overlay-close').click()")
+                expect_new = True
+                await asyncio.sleep(0.25)
+                continue
+            await asyncio.sleep(0.06)
+        print(f"  announcements: {banners}")
+        for i, p in enumerate(panels):
+            print(f"  panel {i + 1}: {p['title']} first-seat={p['seat']} tiles={p['tiles']}")
+        if not any("双响" in x for x in banners):
+            failures.append(f"a double ron was not announced: {banners}")
+        if len(panels) < 2:
+            failures.append(f"a double ron produced {len(panels)} panel(s), expected 2")
+        else:
+            # Seat 1 sits next to the discarder (seat 0) in play order, so its
+            # panel must come first: that is the counter-clockwise settlement.
+            if not panels[0]["seat"].endswith("AI 1"):
+                failures.append(f"first panel is not the closest winner: {panels[0]}")
+            if any(p["tiles"] == 0 for p in panels):
+                failures.append("a winner's panel showed no hand")
+        if first_sight and first_sight["panel"] and not first_sight["banner"]:
+            failures.append("the settlement appeared before its announcement")
+        if b.problems:
+            failures.append(f"page exceptions: {b.problems[:2]}")
+        if b.console:
+            failures.append(f"console errors: {b.console[:2]}")
+        return failures
+
+
 async def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "fit"
     if mode == "fit":
@@ -748,8 +855,10 @@ async def main():
         failures = await check_settle()
     elif mode == "protocol":
         failures = await check_protocol()
+    elif mode == "multi":
+        failures = await check_multi()
     else:
-        sys.exit(f"unknown mode {mode!r}; use fit, play, riichi, panels, settle or protocol")
+        sys.exit(f"unknown mode {mode!r}; use fit, play, riichi, panels, settle, protocol or multi")
     if failures:
         print("\nFAILED:")
         for f in failures:

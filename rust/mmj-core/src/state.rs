@@ -252,6 +252,13 @@ pub enum Event {
         hand: Vec<Tile>,
         #[serde(default)]
         melds: Vec<Meld>,
+        /// What this winner was paid, sticks included. `deltas` is the whole
+        /// table for the hand and is the same in every winner's event.
+        #[serde(default)]
+        paid: i32,
+        /// 流し満貫 is settled at an exhaustive draw and has no winning tile.
+        #[serde(default)]
+        nagashi: bool,
     },
     Ryuukyoku {
         reason: DrawReason,
@@ -1537,6 +1544,12 @@ impl Table {
         let sticks = self.riichi_sticks;
         let mut stick_taken = 0u32;
         let mut total_deltas = [0i32; 4];
+        // What each winner himself collected, and how many sticks he took. A
+        // double ron pays each winner separately — handing every winner the
+        // hand-wide total (and the same riichi sticks) tells both of them they
+        // were paid the other's money.
+        let mut paid = vec![0i32; winners.len()];
+        let mut sticks_each = vec![0u32; winners.len()];
 
         for (i, (seat, from, _tile, score)) in winners.iter().enumerate() {
             let mut d = [0i32; 4];
@@ -1577,6 +1590,8 @@ impl Table {
                 d[*seat as usize] += sticks as i32 * 1000;
                 stick_taken = sticks;
             }
+            paid[i] = d[*seat as usize];
+            sticks_each[i] = if i == 0 { stick_taken } else { 0 };
             for s in 0..4 {
                 self.players[s].score += d[s];
                 total_deltas[s] += d[s];
@@ -1585,7 +1600,7 @@ impl Table {
         if stick_taken > 0 {
             self.riichi_sticks = 0;
         }
-        for (seat, from, tile, score) in &winners {
+        for (i, (seat, from, tile, score)) in winners.iter().enumerate() {
             // A ron win takes the tile from the discard pile, so the winning
             // hand is the concealed tiles *plus* it; a tsumo already holds it.
             let mut hand = self.players[*seat as usize].hand_tiles.clone();
@@ -1600,9 +1615,11 @@ impl Table {
                 tile: *tile,
                 score: score.clone(),
                 deltas: total_deltas,
-                riichi_sticks_taken: stick_taken,
+                riichi_sticks_taken: sticks_each[i],
+                paid: paid[i],
                 hand,
                 melds,
+                nagashi: false,
             });
         }
         let dealer_won = winners.iter().any(|(s, _, _, _)| *s == self.dealer);
@@ -1666,10 +1683,12 @@ impl Table {
                         score,
                         deltas: total,
                         riichi_sticks_taken: 0,
+                        paid: d[seat as usize],
                         // 流し満貫 is a draw-time settlement: there is no
                         // winning tile, but the hand is still worth showing.
                         hand: self.players[seat as usize].hand_tiles.clone(),
                         melds: self.players[seat as usize].melds.clone(),
+                        nagashi: true,
                     });
                 }
                 let dealer_nagashi = nagashi.contains(&self.dealer);
@@ -1997,7 +2016,19 @@ impl Table {
                 .iter()
                 .find(|d| d.seat == observer)
                 .cloned(),
-            events: self.events.clone(),
+            // `Draw` carries a private tile, so another seat's draws are
+            // dropped rather than shipped: a view must never let its reader
+            // reconstruct somebody else's hand. (The type has said so all
+            // along — see the note on `Event`.)
+            events: self
+                .events
+                .iter()
+                .filter(|e| match e {
+                    Event::Draw { seat, .. } => *seat == observer,
+                    _ => true,
+                })
+                .cloned()
+                .collect(),
             finished: self.finished,
         }
     }

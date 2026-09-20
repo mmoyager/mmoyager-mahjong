@@ -126,7 +126,11 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
   gap: var(--pond-gap);
   transform: translate(-50%, -50%) rotate(var(--rot, 0deg));
 }
-.pond-grid .tile { --w: var(--pond-tile-w); --h: var(--pond-tile-h); }
+/* Specificity matters here: `.tile.small` also sets --w/--h, and with equal
+   specificity the later rule won, so the pond tiles were 27x36 while app.js
+   sized the rotated frames from 25x34 — 12px of overflow onto the neighbouring
+   panels. Keep this selector stronger than `.tile.small`. */
+#ring .pond-grid .tile { --w: var(--pond-tile-w); --h: var(--pond-tile-h); }
 .pond-grid .tile.called { opacity: 0.42; }
 
 #centre-panel {
@@ -393,3 +397,24 @@ button:focus-visible, .tile:focus-visible, a.navlink:focus-visible, select:focus
 #overlay-body .up { color: #6ee7a0; }
 #overlay-body .down { color: #ff9d9d; }
 #overlay-body .muted { color: var(--muted); font-size: 13px; }
+
+/* ---------- announcements (立直 / 自摸 / 荣和 / 流局) ---------- */
+#banner {
+  position: fixed; left: 0; right: 0; top: 38%; z-index: 25;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  /* it must never eat a click: the buttons underneath stay usable */
+  pointer-events: none;
+  text-shadow: 0 4px 18px rgba(0, 0, 0, 0.75), 0 1px 0 rgba(0, 0, 0, 0.9);
+}
+#banner .banner-text {
+  font-size: 92px; font-weight: 800; letter-spacing: 0.14em; line-height: 1;
+  color: var(--gold); -webkit-text-stroke: 2px rgba(0, 0, 0, 0.55);
+}
+#banner .banner-sub { font-size: 20px; color: var(--ink); letter-spacing: 0.08em; }
+#banner.pop { animation: banner-pop 0.42s cubic-bezier(0.2, 1.5, 0.4, 1); }
+@keyframes banner-pop {
+  from { transform: scale(0.6); opacity: 0; }
+  60%  { transform: scale(1.06); opacity: 1; }
+  to   { transform: scale(1); opacity: 1; }
+}
+@media (max-width: 1200px) { #banner .banner-text { font-size: 68px; } }

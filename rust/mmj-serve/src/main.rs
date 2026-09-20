@@ -604,7 +604,12 @@ async fn handle_socket(socket: WebSocket, checkpoints: CheckpointSource) {
     let mut session: Option<Session> = {
         let seed = rand::thread_rng().gen::<u64>();
         let mut s = Session::new(0, GameLength::Tonpuu, BotKind::Efficiency, seed, &checkpoints);
-        s.advance();
+        // The opening events matter too: without them the record starts empty
+        // and the first discards never appear in it.
+        let events = s.advance();
+        if !events.is_empty() {
+            send_json!(json!({ "type": "events", "events": events }));
+        }
         let state = s.state_message();
         send_json!(state);
         Some(s)
@@ -644,9 +649,12 @@ async fn handle_socket(socket: WebSocket, checkpoints: CheckpointSource) {
                 let seat = seat.unwrap_or(0).min(3);
                 let seed = seed.unwrap_or_else(|| rand::thread_rng().gen::<u64>());
                 let mut s = Session::new(seat, length, bot.unwrap_or_default(), seed, &checkpoints);
-                s.advance();
+                let events = s.advance();
                 let state = s.state_message();
                 session = Some(s);
+                if !events.is_empty() {
+                    send_json!(json!({ "type": "events", "events": events }));
+                }
                 send_json!(state);
             }
             ClientMsg::Action { action } => {
