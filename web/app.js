@@ -1027,6 +1027,9 @@ function showRyuukyoku(r) {
     const tenpai = r.tenpai.filter(Boolean).length;
     if (tenpai === 0) {
       note.textContent = "全員不听：不支付罚符";
+    } else if (tenpai === 4) {
+      // Nobody is noten, so nobody pays — that is not "nobody is tenpai".
+      note.textContent = "四家全部听牌：不支付罚符";
     } else {
       // 3000 points in total, split between the tenpai hands — which is only
       // "1000 each" when all three of the others are noten.
@@ -1039,7 +1042,9 @@ function showRyuukyoku(r) {
   } else if (exhaustive) {
     const note = document.createElement("p");
     note.className = "muted";
-    note.textContent = "全員不听：不支付罚符";
+    note.textContent = r.tenpai.every(Boolean)
+      ? "四家全部听牌：不支付罚符"
+      : "全員不听：不支付罚符";
     body.appendChild(note);
   }
   overlay("流局", body.innerHTML);

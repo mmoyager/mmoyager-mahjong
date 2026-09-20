@@ -671,16 +671,19 @@ async def check_settle():
                 title = after["title"]
                 if title == "流局":
                     stats["own-draw" if own else "draw"] += 1
-                    if "听牌" not in after["text"]:
-                        failures.append(f"draw settlement does not list tenpai: {after['text']}")
-                    if "○" in after["text"]:
-                        stats["draw-paid"] += 1
-                        if "罚符" not in after["text"]:
-                            failures.append(f"draw with tenpai does not mention 罚符: {after['text']}")
-                        if after["rows"] < 4:
-                            failures.append(f"draw with tenpai has no score table: {after['text']}")
-                    elif "不听" not in after["text"]:
-                        failures.append(f"all-noten draw does not say so: {after['text']}")
+                    # An abortive draw never compares hands and pays nothing, so
+                    # only an exhaustive draw has a tenpai list to check.
+                    if "荒牌流局" in after["text"]:
+                        if "听牌" not in after["text"]:
+                            failures.append(f"exhaustive draw does not list tenpai: {after['text']}")
+                        if after["rows"] < 4 and "不支付罚符" not in after["text"]:
+                            failures.append(f"draw neither paid nor said why: {after['text']}")
+                        if after["rows"] >= 4:
+                            stats["draw-paid"] += 1
+                            if "罚符" not in after["text"]:
+                                failures.append(f"draw with a payment does not mention 罚符: {after['text']}")
+                    elif after["rows"] >= 4:
+                        failures.append(f"an abortive draw paid somebody: {after['text']}")
                 elif title in ("自摸！", "荣和！"):
                     key = ("own-" + pending) if own else "bot-win"
                     stats[key] = stats.get(key, 0) + 1
