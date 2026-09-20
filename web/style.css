@@ -164,7 +164,10 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
   flex: 0 0 auto;
   user-select: none;
   line-height: 1;
-  background-image: url("/tiles/Front.svg");
+  /* The ?v= must be bumped with TILE_REVISION in web/app.js whenever the
+   artwork changes, or a browser keeps the old bodies while the faces
+   refresh (they are cached per URL, header or not). */
+  background-image: url("/tiles/Front.svg?v=2");
   background-size: 100% 100%;
   background-repeat: no-repeat;
   filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.4));
@@ -209,7 +212,7 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
 /* opponents' tiles, face down */
 .backs { display: flex; gap: 1px; flex-wrap: wrap; justify-content: center; }
 .backs.vertical { flex-direction: column; align-items: center; }
-.back { width: 15px; height: 20px; background-image: url("/tiles/Back.svg");
+.back { width: 15px; height: 20px; background-image: url("/tiles/Back.svg?v=2");
   background-size: 100% 100%; filter: drop-shadow(0 1px 1px rgba(0,0,0,0.4)); }
 .backs.vertical .back { width: 20px; height: 15px; transform: rotate(90deg); }
 
@@ -418,3 +421,17 @@ button:focus-visible, .tile:focus-visible, a.navlink:focus-visible, select:focus
   to   { transform: scale(1); opacity: 1; }
 }
 @media (max-width: 1200px) { #banner .banner-text { font-size: 68px; } }
+
+/* A red five is dora; at pond size the red print alone is easy to miss, so it
+   also gets a faint gold edge. (`.tile.aka` was set from the start and had no
+   rule, so it did nothing.) */
+.tile.aka { box-shadow: inset 0 0 0 1px rgba(255, 209, 102, 0.55); }
+
+/* 白 is a blank tile by rule, but a completely empty face reads as a broken
+   image next to the others. A faint inner frame says "deliberately blank"
+   without inventing a marking. Delete this rule for the strictest look. */
+.tile.haku::after {
+  content: ""; position: absolute; inset: 14% 12%; border-radius: 2px;
+  border: 1px solid rgba(60, 55, 45, 0.35);
+  pointer-events: none;
+}

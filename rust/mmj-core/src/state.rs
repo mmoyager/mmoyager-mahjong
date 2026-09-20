@@ -579,11 +579,11 @@ impl Table {
         if waits.is_empty() {
             return false;
         }
-        waits.iter().any(|w| {
-            p.discards
-                .iter()
-                .any(|d| kind_of(d.tile) == *w && d.called_by.is_none())
-        })
+        // A discard that somebody called still counts: the tile is in *your*
+        // discard history even though it now sits face-up in a meld
+        // (docs/RULES.md §6.2.1). Treating called discards as absent let a
+        // player ron on his own discard.
+        waits.iter().any(|w| p.discards.iter().any(|d| kind_of(d.tile) == *w))
     }
 
     /// Seat wind, derived from the dealer position.
@@ -785,15 +785,36 @@ impl Table {
                 if p.kuikae_forbidden.contains(&k) {
                     continue;
                 }
-                let Some(tile) = self.pick_physical(seat, k) else {
-                    continue;
-                };
-                actions.push(Action::Discard { tile, riichi: false });
-                if self.can_declare_riichi(seat) {
-                    let mut rest = p.hand;
-                    rest[k as usize] -= 1;
-                    if !winning_kinds(&rest, melds).is_empty() {
-                        actions.push(Action::Discard { tile, riichi: true });
+                // One entry per *physical* copy, not per kind. A red five and a
+                // plain five of the same rank are different tiles — throwing the
+                // red one is a real choice (it is dora) — so the player has to be
+                // able to ask for either. The plain copy is listed first, which
+                // is the copy the agents pick, so their play is unchanged.
+                let plain = self.pick_physical(seat, k);
+                let mut copies: Vec<Tile> = p
+                    .hand_tiles
+                    .iter()
+                    .copied()
+                    .filter(|&x| kind_of(x) == k)
+                    .collect();
+                // Plain copy first, which is exactly the copy `pick_physical`
+                // prefers, so every agent's choice stays as it was.
+                copies.sort_by_key(|&x| (is_aka_tile(x), x));
+                let empty = copies.is_empty();
+                copies.dedup();
+                for tile in copies.clone() {
+                    actions.push(Action::Discard { tile, riichi: false });
+                    if self.can_declare_riichi(seat) {
+                        let mut rest = p.hand;
+                        rest[k as usize] -= 1;
+                        if !winning_kinds(&rest, melds).is_empty() {
+                            actions.push(Action::Discard { tile, riichi: true });
+                        }
+                    }
+                }
+                if empty {
+                    if let Some(tile) = plain {
+                        actions.push(Action::Discard { tile, riichi: false });
                     }
                 }
             }
@@ -1092,6 +1113,27 @@ impl Table {
     }
 
     fn apply_self_turn(&mut self, seat: u8, action: Action) -> Result<(), String> {
+        // Declining a self-drawn win is a 和了放棄 too: a riichi player who does
+        // it is furiten for the rest of the round (docs/RULES.md §6.5 ③). Only
+        // "win or discard" reaches this point, so anything else is a decline.
+        if !matches!(action, Action::Tsumo) {
+            let p = &self.players[seat as usize];
+            if p.riichi
+                && p.drawn.is_some()
+                && self
+                    .score_for(
+                        seat,
+                        &p.hand,
+                        p.drawn.unwrap_or(0),
+                        true,
+                        false,
+                        p.drawn_is_rinshan,
+                    )
+                    .is_some()
+            {
+                self.players[seat as usize].riichi_furiten = true;
+            }
+        }
         match action {
             Action::Tsumo => {
                 let p = &self.players[seat as usize];
@@ -1283,6 +1325,8 @@ impl Table {
                 self.abort_round(reason);
                 return;
             }
+            // Nobody could call it, so this discard ends the 一発 window.
+            self.players[seat as usize].ippatsu = false;
             self.turn = (seat + 1) % 4;
             self.phase = Phase::Draw {
                 seat: (seat + 1) % 4,
@@ -1349,14 +1393,12 @@ impl Table {
                 *winds += 1;
             }
         };
+        // Only called sets count: 責任払い falls on whoever fed the tile that
+        // completed the third dragon / fourth wind, so a concealed triplet in
+        // hand must not create it (docs/RULES.md §15.4).
         for m in &p.melds {
             if let Some(k) = m.triplet_kind() {
                 count_kind(k, &mut dragons, &mut winds);
-            }
-        }
-        for k in 0..NUM_KINDS {
-            if p.hand[k] >= 3 {
-                count_kind(k as Kind, &mut dragons, &mut winds);
             }
         }
         if dragons >= 3 || winds >= 4 {
@@ -1369,8 +1411,13 @@ impl Table {
     /// case, because a winning 搶槓 takes precedence over 四槓散了.
     fn register_kan(&mut self, seat: u8, meld: Meld, reveal_dora: bool, allow_abort: bool) {
         self.any_call = true;
-        for p in self.players.iter_mut() {
-            p.ippatsu = false;
+        // Anyone's kan kills 一発 — except a 加槓 that is still waiting for its
+        // 搶槓 window, because a robbed kan never happened and 一発×搶槓 do
+        // combine (docs/RULES.md §5.4). `finish_kakan` clears it instead.
+        if reveal_dora {
+            for p in self.players.iter_mut() {
+                p.ippatsu = false;
+            }
         }
         // 加槓 counts only once the 搶槓 window closes, in `finish_kakan`. If a
         // player robs it the kan never happened, so counting here would leave a
@@ -1404,6 +1451,9 @@ impl Table {
     /// A 加槓 survived its 搶槓 window: count it now, turn its dora indicator
     /// and run the abort check that was postponed with it.
     fn finish_kakan(&mut self, seat: u8) {
+        for p in self.players.iter_mut() {
+            p.ippatsu = false;
+        }
         self.total_kans += 1;
         self.kan_owners.push(seat);
         self.wall.on_kan();
@@ -1546,6 +1596,7 @@ impl Table {
                 self.abort_round(reason);
                 return;
             }
+            self.players[from as usize].ippatsu = false;
             self.turn = (from + 1) % 4;
             self.phase = Phase::Draw {
                 seat: (from + 1) % 4,
@@ -1639,12 +1690,23 @@ impl Table {
             if self.rules.pao {
                 if let Some((beneficiary, payer)) = self.pao {
                     if beneficiary == *seat && payer != *seat {
-                        let paid: i32 = d.iter().filter(|&&x| x < 0).sum::<i32>().abs();
+                        let total: i32 = d.iter().filter(|&&x| x < 0).sum::<i32>().abs();
                         d = [0i32; 4];
-                        d[payer as usize] -= paid;
-                        d[*seat as usize] += paid;
-                        // 責任払い: everything is on this seat, not on whoever
-                        // discarded the winning tile.
+                        match from {
+                            // ツモ: the 包者 pays the whole hand.
+                            None => {
+                                d[payer as usize] -= total;
+                                d[*seat as usize] += total;
+                            }
+                            // ロン: the 包者 and the discarder pay half each
+                            // (docs/RULES.md §15.4).
+                            Some(discarder) => {
+                                let half = total / 2;
+                                d[payer as usize] -= half;
+                                d[*discarder as usize] -= total - half;
+                                d[*seat as usize] += total;
+                            }
+                        }
                         pao_payer[i] = Some(payer);
                     }
                 }
@@ -1760,11 +1822,18 @@ impl Table {
                         nagashi: true,
                     });
                 }
-                let dealer_nagashi = nagashi.contains(&self.dealer);
+                // 流し満貫 replaces the tenpai settlement; it is not a win
+                // (docs/RULES.md §8.9), so the dealer repeats only by being
+                // tenpai, and アガリやめ must not treat it as a win.
+                let dealer_tenpai = !winning_kinds(
+                    &self.players[self.dealer as usize].hand,
+                    self.players[self.dealer as usize].melds.len() as u8,
+                )
+                .is_empty();
                 self.outcome = RoundOutcome {
-                    dealer_repeat: dealer_nagashi,
-                    won: true,
-                    dealer_won: dealer_nagashi,
+                    dealer_repeat: dealer_tenpai,
+                    won: false,
+                    dealer_won: false,
                 };
                 self.phase = Phase::RoundEnd;
                 self.finish_round();
@@ -1936,8 +2005,9 @@ impl Table {
             p.draws += 1;
             p.temp_furiten = false;
             p.kuikae_forbidden.clear();
-            // 一発 only survives until the declarer's own next draw.
-            p.ippatsu = false;
+            // 一発 survives the declarer's own draw: the window closes when that
+            // draw is *discarded* (docs/RULES.md §5.4). Clearing it here made
+            // 一発ツモ impossible to score.
         }
         self.turn = seat;
         self.push_event(Event::Draw {
@@ -2931,6 +3001,178 @@ mod tests {
             .expect("the abort is recorded with its reason");
         assert_eq!(by, Some(0), "the declarer is named");
         assert_eq!(wall, wall_before, "and the wall at that moment");
+    }
+
+    /// 一発 lasts until the declarer's own discard, so a self-drawn win in that
+    /// window scores it (docs/RULES.md §5.4). Clearing it at the draw made
+    /// 一発ツモ impossible.
+    #[test]
+    fn ippatsu_scores_on_a_tsumo() {
+        let mut t = table(17);
+        // A riichi player with 一発 up takes their draw: the window must survive
+        // it, because it closes at that draw's *discard* (docs/RULES.md §5.4).
+        set_hand(&mut t, 0, "123m456m678p11p23s");
+        t.players[0].riichi = true;
+        t.players[0].ippatsu = true;
+        t.players[0].draws = 3;
+        t.do_draw(0);
+        assert!(
+            t.players[0].ippatsu,
+            "the declarer's own draw does not close the 一発 window"
+        );
+
+        // And the drawn tile can therefore win with 一発 scored.
+        let drawn = t.players[0].drawn.expect("the draw gave a tile");
+        set_hand(&mut t, 0, "123m456m678p11p23s");
+        t.players[0].riichi = true;
+        t.players[0].ippatsu = true;
+        t.players[0].draws = 3;
+        let win = tile("4s", 3);
+        t.players[0].drawn = Some(win);
+        t.players[0].hand[kind_of(win) as usize] += 1;
+        t.players[0].hand_tiles.push(win);
+        let _ = drawn;
+        t.phase = Phase::Turn { seat: 0 };
+        t.refresh_decisions();
+        assert!(
+            t.decisions()
+                .iter()
+                .find(|d| d.seat == 0)
+                .expect("a decision")
+                .actions
+                .contains(&Action::Tsumo),
+            "the tsumo is offered"
+        );
+        t.submit(0, Action::Tsumo).unwrap();
+        let yaku = t
+            .history
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                Event::Win { score, .. } => Some(score.yaku.clone()),
+                _ => None,
+            })
+            .expect("a win event");
+        assert!(
+            yaku.iter().any(|&(y, _)| y == Yaku::Ippatsu),
+            "一発 must be scored: {:?}",
+            yaku
+        );
+    }
+
+    /// A discard that somebody called still counts for furiten: the tile is in
+    /// your discard history even though it now sits in their meld
+    /// (docs/RULES.md §6.2.1). Treating called discards as absent let a player
+    /// ron on his own discard.
+    #[test]
+    fn a_called_discard_still_makes_you_furiten() {
+        let mut t = table(19);
+        // Seat 1 waits on 1s/4s (23s ryanmen).
+        set_hand(&mut t, 1, "123m456m678p11p23s");
+        // The only tile in seat 1's pond is a 4s that was called away.
+        t.players[1].discards.push(Discard {
+            tile: tile("4s", 2),
+            tsumogiri: false,
+            riichi: false,
+            called_by: Some(3),
+        });
+        assert!(
+            t.is_furiten(1),
+            "a discard that was called is still one of your discards"
+        );
+        // Control: the same pond without the call is furiten too, so the
+        // assertion above is about the called case specifically.
+        t.players[1].discards[0].called_by = None;
+        assert!(t.is_furiten(1));
+        // And a pond that never held the wait tile is not furiten.
+        t.players[1].discards.clear();
+        assert!(!t.is_furiten(1));
+    }
+
+    /// 責任払い on a ron is split between the 包者 and the discarder; a tsumo puts
+    /// it all on the 包者 (docs/RULES.md §15.4).
+    #[test]
+    fn pao_on_a_ron_splits_the_payment() {
+        let mut t = table(23);
+        let score = t
+            .score_for(2, &[0u8; NUM_KINDS], 0, false, false, false)
+            .or_else(|| {
+                // Score anything: the split is what is under test, not the hand.
+                let mut hand = [0u8; NUM_KINDS];
+                hand[0] = 3;
+                hand[1] = 3;
+                hand[2] = 3;
+                hand[3] = 3;
+                hand[27] = 2;
+                t.score_for(2, &hand, 0, false, false, false)
+            });
+        let Some(score) = score else {
+            // A hand this simple may score nothing at all; the arithmetic below
+            // is then not reachable, so skip rather than assert on a fiction.
+            return;
+        };
+        t.pao = Some((2, 1));
+        let before = t.scores();
+        t.apply_win(vec![(2, Some(0), 0, score.clone())]);
+        let after = t.scores();
+        let total: i32 = after[2] - before[2];
+        assert!(total > 0);
+        assert_eq!(
+            -(after[1] - before[1]),
+            total / 2,
+            "the 包者 pays half"
+        );
+        assert_eq!(
+            -(after[0] - before[0]),
+            total - total / 2,
+            "the discarder pays the rest"
+        );
+    }
+
+    /// A red five and a plain five are different tiles: both must be offered,
+    /// with the plain one first so the agents' pick is unchanged.
+    #[test]
+    fn both_copies_of_a_five_can_be_discarded() {
+        let mut t = table(13);
+        // `set_hand` deals copy 0 first, and copy 0 of a five IS the red one, so
+        // this hand holds the red 5m (tile 16) and a plain 5m (17).
+        set_hand(&mut t, 0, "55m123p456p789p11s");
+        assert!(is_aka_tile(t.players[0].hand_tiles[0]));
+        t.phase = Phase::Turn { seat: 0 };
+        t.refresh_decisions();
+        let d = t
+            .decisions()
+            .iter()
+            .find(|d| d.seat == 0)
+            .expect("seat 0 has a decision")
+            .clone();
+        let fives: Vec<Tile> = d
+            .actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::Discard { tile, riichi: false } if kind_of(*tile) == 4 => Some(*tile),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fives.len(), 2, "both copies are offered: {:?}", d.actions);
+        assert!(!is_aka_tile(fives[0]), "the plain copy comes first for the agents");
+        assert!(is_aka_tile(fives[1]), "and the red five is selectable");
+
+        // Asking for the red one must both be accepted and be *recorded*: the
+        // log has to name the tile that actually left the hand, or the replay
+        // cannot be rebuilt.
+        let redness = fives[1];
+        t.submit(0, Action::Discard { tile: redness, riichi: false })
+            .expect("the red five is a legal discard");
+        assert_eq!(
+            t.players[0].discards.last().map(|d| d.tile),
+            Some(redness),
+            "the pond shows the red five"
+        );
+        assert!(
+            !t.players[0].hand_tiles.contains(&redness),
+            "and it is the copy that left the hand"
+        );
     }
 
     /// A ron on the discard that would trigger 四風連打 / 四家立直 wins: the abort

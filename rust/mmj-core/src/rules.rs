@@ -109,7 +109,9 @@ pub struct Rules {
     /// 人和 value.
     pub renhou: RenhouValue,
     /// A double wind pair (round wind == seat wind) is worth 4 fu instead of 2.
-    /// Tenhou: `false` (2 fu).
+    /// Tenhou: `true` — 4 fu, per the Tenhou manual (「連風牌は4符」), which is
+    /// what `docs/RULES.md` §4.4 and the rules table record. Other rulesets use
+    /// 2 fu; that is the `competitive()` preset.
     pub double_wind_pair_fu: bool,
     /// 責任払い applies to 大三元 and 大四喜 (the standard scope).
     pub pao: bool,
@@ -161,7 +163,7 @@ impl Rules {
             abort_four_kans: true,
             abort_four_winds: true,
             renhou: RenhouValue::Off,
-            double_wind_pair_fu: false,
+            double_wind_pair_fu: true,
             pao: true,
             min_riichi_wall: 4,
             starting_score: 25000,
@@ -197,7 +199,7 @@ impl Rules {
             abort_four_kans: true,
             abort_four_winds: true,
             renhou: RenhouValue::Mangan,
-            double_wind_pair_fu: true,
+            double_wind_pair_fu: false,
             pao: true,
             min_riichi_wall: 4,
             starting_score: 25000,

@@ -167,9 +167,18 @@ impl NnAgent {
         value /= n;
         // Copy the averaged distribution into the buffer the sampler reads.
         self.logits.copy_from_slice(&self.probs);
+        // One entry per *slot*, not per action: the engine may now offer several
+        // physical copies of the same tile (a plain five and the red five), and
+        // they share a policy slot. Reporting the slot's probability once per
+        // copy would sum to more than one.
         let mut out = Vec::with_capacity(self.obs.actions.len());
+        let mut seen = vec![false; mmj_nn::POLICY_DIM];
         for (i, &action) in self.obs.actions.iter().enumerate() {
             let slot = self.obs.slots[i];
+            if seen[slot] {
+                continue;
+            }
+            seen[slot] = true;
             out.push((action, self.probs[slot]));
         }
         (out, value)

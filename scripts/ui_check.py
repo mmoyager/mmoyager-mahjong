@@ -18,6 +18,7 @@ Two modes:
     python3 scripts/ui_check.py multi    # announcements, and one panel per winner
     python3 scripts/ui_check.py seats    # every seat, and a whole half game
     python3 scripts/ui_check.py match    # how a match ends, and reconnect resume
+    python3 scripts/ui_check.py tiles    # every tile kind maps to artwork that paints
 
 `fit` is the regression check for layout; `play` is the end-to-end check for
 rounds, wins, draws, calls and the final overlay; `riichi` is the rules check
@@ -384,7 +385,8 @@ async def check_riichi():
         t0 = time.time()
         armed = False
         while time.time() - t0 < PLAY_SECONDS:
-            step = str(await b.ev(RIICHI_STEP))
+            # The hint-driven player, so the hand actually reaches tenpai.
+            step = str(await b.ev(SETTLE_STEP))
             raw = await b.ev(RIICHI_STATUS)
             if raw:
                 st = json.loads(raw)
@@ -582,6 +584,13 @@ SETTLE_STEP = r"""
   if (ron) { ron.click(); return 'ron'; }
   const pass = btns.find(b => b.textContent.trim() === '跳过');
   if (pass) { pass.click(); return 'pass'; }
+  // Declare riichi whenever it is offered, like a player would.
+  const ripple = btns.find(b => b.classList.contains('riichi-toggle'));
+  if (ripple && !ripple.classList.contains('on')) {
+    ripple.click();
+    const t = document.querySelector('#hand .tile.clickable');
+    if (t) { t.click(); return 'declare-riichi'; }
+  }
 
   // Play the hand the way the baseline recommends, so the human actually wins
   // sometimes: clicking the first tile at random never reaches a win. One hint
@@ -1027,6 +1036,82 @@ async def check_match():
         return failures
 
 
+# --- tile artwork checks ----------------------------------------------------
+
+TILE_PROBE = r"""
+(async () => {
+  const out = {kinds: {}, files: {}};
+  for (let k = 0; k < 34; k++) {
+    const file = tileFile(k * 4);
+    const url = '/tiles/' + file + '.svg?v=' + TILE_REVISION;
+    const img = new Image();
+    let loaded = true;
+    img.src = url;
+    try { await img.decode(); } catch (e) { loaded = false; }
+    let ink = 0, red = 0;
+    if (loaded) {
+      const W = 46, H = 62;
+      const c = document.createElement('canvas'); c.width = W; c.height = H;
+      const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0, W, H);
+      const d = ctx.getImageData(0, 0, W, H).data;
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i + 3] > 8) { ink++; if (d[i] > 150 && d[i + 1] < 90 && d[i + 2] < 90) red++; }
+      }
+    }
+    out.kinds[k] = {file, loaded, ink, red};
+  }
+  return JSON.stringify(out);
+})()"""
+
+
+async def check_tiles():
+    """Every tile kind must map to artwork that exists, loads and paints.
+
+    A wrong file name is invisible until a player meets that tile: 白 once
+    pointed at the pack's *placeholder* face, whose artwork is a red "?" glyph,
+    and nobody noticed until it turned up in a hand.
+    """
+    failures = []
+    # The white dragon is intentionally blank (白板): `Haku.svg` draws nothing and
+    # the tile shows its plain body. Every other kind must paint something.
+    BLANK_KINDS = {31}
+    async with Browser("1280,800") as b:
+        await b.new_game("tonpuu")
+        await asyncio.sleep(1.0)
+        res = json.loads(await b.ev(TILE_PROBE))["kinds"]
+        for k in range(34):
+            v = res[str(k)]
+            if not v["loaded"]:
+                failures.append(f"kind {k}: {v['file']}.svg does not load")
+                continue
+            if k in BLANK_KINDS:
+                if v["ink"] != 0:
+                    failures.append(f"kind {k} ({v['file']}) should be blank, paints {v['ink']} px")
+                continue
+            if v["ink"] < 50:
+                failures.append(f"kind {k} ({v['file']}) paints almost nothing ({v['ink']} px)")
+        # The dragons are colour-coded in this set; a red-white dragon means the
+        # wrong file is being used.
+        red = res["33"]
+        white = res["31"]
+        green = res["32"]
+        print(f"  dragons: 白={white['file']}({white['ink']} px) 發={green['file']}({green['ink']} px) "
+              f"中={red['file']}({red['ink']} px, {red['red']} red)")
+        if red["ink"] and red["red"] < red["ink"] * 0.5:
+            failures.append(f"中 is not mostly red ({red['red']}/{red['ink']} px)")
+        if white["ink"] != 0:
+            failures.append(f"白 is not blank: {white['file']} paints {white['ink']} px")
+        # Every honour must map to a *different* file.
+        honour_files = [res[str(k)]["file"] for k in range(27, 34)]
+        if len(set(honour_files)) != len(honour_files):
+            failures.append(f"two honours share a file: {honour_files}")
+        if b.problems:
+            failures.append(f"{len(b.problems)} page exceptions (first: {b.problems[0]})")
+        if b.console:
+            failures.append(f"{len(b.console)} console errors (first: {b.console[0]})")
+        return failures
+
+
 async def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "fit"
     if mode == "fit":
@@ -1047,8 +1132,10 @@ async def main():
         failures = await check_seats()
     elif mode == "match":
         failures = await check_match()
+    elif mode == "tiles":
+        failures = await check_tiles()
     else:
-        sys.exit(f"unknown mode {mode!r}; use fit, play, riichi, panels, settle, protocol, multi, seats or match")
+        sys.exit(f"unknown mode {mode!r}; use fit, play, riichi, panels, settle, protocol, multi, seats, match or tiles")
     if failures:
         print("\nFAILED:")
         for f in failures:

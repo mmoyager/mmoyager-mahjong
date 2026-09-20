@@ -131,6 +131,14 @@ const POND_TILE_H = parseFloat(
 const POND_GAP = parseFloat(
   getComputedStyle(document.documentElement).getPropertyValue("--pond-gap")) || 2;
 
+/// Like `tileName`, but a red five is spelled 赤5p rather than the engine's `0p`.
+/// Used wherever a player reads a tile in prose: buttons, aria labels, the
+/// record. (`0p` is the engine's notation and means nothing to most players.)
+function friendlyTileName(tile) {
+  if (!isAka(tile)) return tileName(tile);
+  return "赤5" + ["m", "p", "s"][Math.floor(kindOf(tile) / 9)];
+}
+
 function tileName(tile) {
   const f = tileFace(tile);
   return f.suit === "z" ? f.text : f.text + f.suit;
@@ -140,7 +148,7 @@ function tileName(tile) {
 /// naming them through `kind * 4` would call every 5m/5p/5s wait a red five,
 /// because tiles 16/52/88 are the aka fives.
 function kindName(kind) {
-  if (kind >= 27) return HONOR_FACE[kind] || "?";
+  if (kind >= 27) return HONOR_FACE[kind] || ("kind" + kind);
   const n = (kind % 9) + 1;
   return String(n) + (kind < 9 ? "m" : kind < 18 ? "p" : "s");
 }
@@ -150,9 +158,12 @@ function kindName(kind) {
 // web/tiles/. They are vector, so one file serves the 22 px pond tile and the
 // 62 px hand tile. A text face is kept as a fallback so the table still reads if
 // an image ever fails to load.
-// The white dragon is the set's blank, framed tile. The pack also ships a
-// Haku.svg, but everything in it sits inside <defs> and it paints nothing.
-const HONOR_FILES = ["Ton", "Nan", "Shaa", "Pei", "Blank", "Hatsu", "Chun"];
+// The white dragon is drawn blank, which is the standard look (白板). The pack's
+// Haku.svg is a valid but empty drawing, so the tile shows the plain body. Do
+// NOT substitute Blank.svg here: that file is the pack's *placeholder* face and
+// its artwork is a red "?" glyph, which is exactly how a player reads a broken
+// tile.
+const HONOR_FILES = ["Ton", "Nan", "Shaa", "Pei", "Haku", "Hatsu", "Chun"];
 
 // Bumped whenever the artwork under web/tiles/ changes. The files used to be
 // served with a day-long max-age, so a browser that had seen the old art kept
@@ -172,6 +183,7 @@ function tileEl(tile, opts = {}) {
   const aka = isAka(tile);
   const el = document.createElement("div");
   el.className = "tile"
+    + (tileFile(tile) === "Haku" ? " haku" : "")
     + (opts.small ? " small" : "")
     + (opts.clickable ? " clickable" : "")
     + (opts.disabled ? " disabled" : "")
@@ -183,13 +195,29 @@ function tileEl(tile, opts = {}) {
   img.className = "tile-img";
   img.alt = tileName(tile);
   img.draggable = false;
-  img.src = "/tiles/" + tileFile(tile) + ".svg?v=" + TILE_REVISION;
+  // Keep the face hidden until it has decoded. A request that fails (a blip, a
+  // stale cache entry) otherwise paints the browser's broken-image glyph — a
+  // question mark in some browsers — on top of the tile body, which reads as
+  // "this tile is broken" when the artwork is fine.
+  img.style.visibility = "hidden";
+  const url = "/tiles/" + tileFile(tile) + ".svg?v=" + TILE_REVISION;
+  let retried = false;
+  img.addEventListener("load", () => { img.style.visibility = ""; });
   img.addEventListener("error", () => {
-    // Keep the table readable without the asset: fall back to a text face.
+    if (!retried) {
+      // One retry past the cache: a stale or half-written cache entry recovers,
+      // and nothing is shown while it happens.
+      retried = true;
+      img.src = url + "&r=" + Date.now();
+      return;
+    }
+    // Still nothing: keep the table readable with a text face rather than a
+    // blank or broken tile.
     el.classList.add("no-asset");
     img.remove();
     el.appendChild(textFace(k));
   });
+  img.src = url;
   el.appendChild(img);
 
   if (opts.onClick && !opts.disabled) {
@@ -212,6 +240,10 @@ function tileEl(tile, opts = {}) {
 }
 
 /// The fallback face, used only when a tile image cannot be loaded.
+// Numerals for the man suit's fallback face. (The image is the real face; this
+// only appears if the artwork cannot be loaded at all.)
+const NUMERAL = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九"];
+
 function textFace(k) {
   const face = document.createElement("span");
   face.className = "face";
@@ -615,7 +647,7 @@ function renderHand(view, human) {
     handEl.appendChild(tileEl(t, {
       clickable: canPlay,
       disabled: discardable && !canPlay,
-      label: (riichiMode ? "立直并打出 " : "打出 ") + tileName(t),
+      label: (riichiMode ? "立直并打出 " : "打出 ") + friendlyTileName(t),
       onClick: clickTile(t),
     }));
   });
@@ -625,7 +657,7 @@ function renderHand(view, human) {
       clickable: canPlay,
       disabled: discardable && !canPlay,
       extra: "drawn",
-      label: (riichiMode ? "立直并打出刚摸到的 " : "打出刚摸到的 ") + tileName(drawn),
+      label: (riichiMode ? "立直并打出刚摸到的 " : "打出刚摸到的 ") + friendlyTileName(drawn),
       onClick: clickTile(drawn),
     }));
   }
@@ -727,11 +759,11 @@ function renderActions() {
     const k = actKind(a);
     if (k === "Pon") add("碰", a);
     if (k === "Minkan") add("大明杠", a);
-    if (k === "Ankan") add("暗杠 " + tileName(a.Meld.meld.tiles[0]), a);
-    if (k === "Kakan") add("加杠 " + tileName(a.Meld.meld.tiles[0]), a);
+    if (k === "Ankan") add("暗杠 " + friendlyTileName(a.Meld.meld.tiles[0]), a);
+    if (k === "Kakan") add("加杠 " + friendlyTileName(a.Meld.meld.tiles[0]), a);
     if (k === "Chi") {
       const m = a.Meld.meld;
-      const names = m.tiles.slice(0, m.len).map(tileName).join("");
+      const names = m.tiles.slice(0, m.len).map(friendlyTileName).join("");
       add("吃 " + names, a);
     }
   });
@@ -808,7 +840,7 @@ function absorbEvents(events) {
       if (w.nagashi) {
         announce("流局满贯", botNames[w.seat] || "");
       } else {
-        announce(ron ? "荣和" : "自摸", `${botNames[w.seat] || ""} ${tileName(w.tile)}`);
+        announce(ron ? "荣和" : "自摸", `${botNames[w.seat] || ""} ${friendlyTileName(w.tile)}`);
       }
     }
   } else if (draw) {
@@ -862,25 +894,25 @@ function describeEvent(e) {
   }
   if (e.Discard) {
     const d = e.Discard;
-    return `${who(d.seat)} 打出 <strong>${tileName(d.tile)}</strong>`
+    return `${who(d.seat)} 打出 <strong>${friendlyTileName(d.tile)}</strong>`
       + (d.riichi ? " 并立直" : "") + (d.tsumogiri ? "（摸切）" : "（手切）");
   }
   if (e.Riichi) return `<strong>${who(e.Riichi.seat)} 立直！</strong>`;
   if (e.Meld) {
     const m = e.Meld;
-    const tiles = m.meld.tiles.slice(0, m.meld.len).map(tileName).join("");
+    const tiles = m.meld.tiles.slice(0, m.meld.len).map(friendlyTileName).join("");
     return `${who(m.seat)} ${meldKindName(m.meld.kind)} ${tiles}`;
   }
   if (e.Kan) {
     const k = e.Kan;
-    return `${who(k.seat)} 杠 ${tileName(k.meld.tiles[0])}`
+    return `${who(k.seat)} 杠 ${friendlyTileName(k.meld.tiles[0])}`
       + (k.dora_indicator !== null && k.dora_indicator !== undefined
         ? `（新宝牌指示牌 ${tileName(k.dora_indicator)}）` : "");
   }
   if (e.DoraRevealed) {
     // 加槓 turns its indicator only after the 搶槓 window closes, so it arrives
     // on its own instead of with the kan.
-    return `新宝牌指示牌 ${tileName(e.DoraRevealed.indicator)}（加杠）`;
+    return `新宝牌指示牌 ${friendlyTileName(e.DoraRevealed.indicator)}（加杠）`;
   }
   if (e.Win) {
     const w = e.Win;
@@ -900,7 +932,7 @@ function describeEvent(e) {
     const showTenpai = r.reason === "Exhaustive" && tenpai.length;
     return `<strong>${DRAW_REASONS[r.reason] || "流局"}</strong>`
       + (r.by !== null && r.by !== undefined ? `（${who(r.by)} 宣布）` : "")
-      + ` · 余 ${r.wall_remaining ?? "?"} 张`
+      + (typeof r.wall_remaining === "number" ? ` · 余 ${r.wall_remaining} 张` : "")
       + (showTenpai ? ` · 听牌：${tenpai.map(esc).join("、")}` : "");
   }
   if (e.RoundEnd) {
@@ -955,8 +987,8 @@ function showWin(w) {
   head.innerHTML = nagashi
     ? `<span class="win">${who(w.seat)}</span> 流局满贯（弃牌全为幺九，且无人鸣牌）`
     : `<span class="win">${who(w.seat)}</span> `
-      + (ron ? `荣和 <strong>${tileName(w.tile)}</strong>（放铳：${who(w.from)}）`
-             : `自摸 <strong>${tileName(w.tile)}</strong>`);
+      + (ron ? `荣和 <strong>${friendlyTileName(w.tile)}</strong>（放铳：${who(w.from)}）`
+             : `自摸 <strong>${friendlyTileName(w.tile)}</strong>`);
   body.appendChild(head);
 
   // The hand that won, so the yaku below can be checked by eye. 流し満貫 has no
@@ -1040,11 +1072,19 @@ function showRyuukyoku(r) {
 
   // The wall reading lets the player check the draw against the table: an abort
   // leaves the wall nearly full, an exhaustive draw leaves it empty.
-  const wall = document.createElement("p");
-  wall.className = "muted";
-  wall.textContent = `本局结束时牌山还剩 ${r.wall_remaining ?? "?"} 张`
-    + (r.reason === "Exhaustive" ? "" : "（途中流局：不计点数，庄家连庄并加一本场）");
-  body.appendChild(wall);
+  if (typeof r.wall_remaining === "number") {
+    const wall = document.createElement("p");
+    wall.className = "muted";
+    wall.textContent = `本局结束时牌山还剩 ${r.wall_remaining} 张`
+      + (r.reason === "Exhaustive" ? "" : "（途中流局：不计点数，庄家连庄并加一本场）");
+    body.appendChild(wall);
+  } else if (r.reason !== "Exhaustive") {
+    // Recorded before the wall reading existed: say what matters, skip the number.
+    const wall = document.createElement("p");
+    wall.className = "muted";
+    wall.textContent = "（途中流局：不计点数，庄家连庄并加一本场）";
+    body.appendChild(wall);
+  }
 
   // Only an exhaustive draw compares hands; the abortive draws pay nobody, so
   // printing tenpai there would invent a settlement that never happened.

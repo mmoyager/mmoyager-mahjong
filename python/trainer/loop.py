@@ -82,22 +82,45 @@ def run(cmd: list[str], env: dict | None = None, quiet: bool = False) -> int:
 
 
 def load_state() -> dict:
-    if STATE_PATH.exists():
-        return json.loads(STATE_PATH.read_text())
-    return {
-        "iteration": 0,
-        "base": None,
-        "best": None,
-        "best_score": None,
-        "history": [],
-        "data_files": [],
-        "checkpoints": [],
-    }
+    if not STATE_PATH.exists():
+        return {
+            "iteration": 0,
+            "base": None,
+            "best": None,
+            "best_score": None,
+            "history": [],
+            "data_files": [],
+            "checkpoints": [],
+        }
+    # A truncated or half-written state file must never be silently discarded:
+    # a fresh state looks like "nothing has ever trained" and would re-bootstrap
+    # over the best checkpoint. Say what is wrong and stop instead.
+    text = STATE_PATH.read_text()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        raise SystemExit(
+            f"{STATE_PATH} is not valid JSON ({e}); refusing to overwrite it. "
+            f"Restore it from a backup, or delete it deliberately, then rerun."
+        )
 
 
 def save_state(state: dict) -> None:
+    """Write the state atomically.
+
+    The loop is stopped with SIGTERM (and, by hand, sometimes SIGKILL). A plain
+    write_text can be interrupted mid-write, and the loop then refuses to resume
+    at all — which is exactly what an unguarded json.loads above would hit. Write
+    to a temporary file in the same directory and rename it over the target, so
+    the state file is always either the old or the new one, never a fragment.
+    """
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_text(json.dumps(state, indent=2))
+    tmp = STATE_PATH.with_suffix(".json.tmp")
+    with open(tmp, "w") as f:
+        json.dump(state, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, STATE_PATH)
 
 
 def ckpt_path(iteration: int) -> Path:
@@ -796,9 +819,21 @@ def main() -> int:
         # as the best to become the base. Accepting a slightly worse one (the old
         # -150 tolerance) let a regressed checkpoint inherit the search and the
         # next iteration then started from a worse point.
+        # A failed evaluation is not a pass. `score is None` used to satisfy
+        # `absolute_ok`, which handed an *unmeasured* candidate the base and the
+        # search — the one case where the loop could silently promote nothing in
+        # particular. Keep the checkpoint the iteration started from instead.
+        if score is None:
+            log(
+                f"  the primary evaluation produced no score (iteration {iteration}); "
+                f"keeping {current.name} as the base"
+            )
+            state["base"] = str(current)
+            state["iteration"] = iteration
+            save_state(state)
+            continue
         absolute_ok = (
-            score is None
-            or state.get("best_score") is None
+            state.get("best_score") is None
             or score >= state["best_score"] + args.accept_margin
         ) and guard_ok
         h2h_ok = head_to_head is None or head_to_head >= 25000.0 - 300.0
