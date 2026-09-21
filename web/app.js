@@ -465,12 +465,26 @@ function render() {
     if (pond) renderPond(pond, p.discards, POND_ROT[r]);
     const label = document.getElementById(labelFor[r]);
     if (label) {
-      label.textContent = (s === human ? "你" : (botNames[s] || "对手")) +
+      label.textContent = (s === human ? "你" : seatName(s)) +
         (p.riichi ? " · 立直" : "");
     }
   }
   renderHand(view, human);
   renderActions();
+}
+
+/// A seat label short enough for a narrow side box.
+///
+/// "神经网络 AI 1" and "神经网络 AI 2" both truncate to the same ellipsis in the
+/// side seats, which makes the table unreadable exactly where the player needs
+/// to tell the opponents apart. Keep the distinguishing part; the full name is
+/// still there as a tooltip.
+function seatName(seat) {
+  const full = botNames[seat] || ("座位" + seat);
+  const m = full.match(/^(.*?)\s*(\d+)$/);
+  if (!m) return full;
+  const kind = m[1].trim().split(/\s+/).pop() || m[1].trim();
+  return kind + " " + m[2];
 }
 
 function seatHead(p, view) {
@@ -486,7 +500,8 @@ function seatHead(p, view) {
   head.appendChild(wind);
   const name = document.createElement("span");
   name.className = "name";
-  name.textContent = botNames[p.seat] || ("座位" + p.seat);
+  name.textContent = seatName(p.seat);
+  name.title = botNames[p.seat] || "";
   head.appendChild(name);
   if (p.furiten) {
     const f = document.createElement("span");
