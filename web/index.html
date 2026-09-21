@@ -51,6 +51,12 @@
           <option value="4">极快</option>
         </select>
       </label>
+      <!-- Every client that ships animation ships a switch: SEGA NET MJ has a
+           演出モード toggle, しらぎく麻雀 an "effects off" option. Off means no
+           motion, not a faster game — the pacing is the same. -->
+      <label class="check" title="关掉所有动效（节奏不变）">
+        <input type="checkbox" id="chk-anim" checked /> 动画
+      </label>
       <button id="btn-new">新对局</button>
       <button id="btn-hint" title="让基线 AI 给出建议">提示</button>
       <button id="btn-replays" title="分析已保存的牌谱">牌谱分析</button>

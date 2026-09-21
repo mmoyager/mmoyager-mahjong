@@ -47,6 +47,14 @@ html, body {
 #round-info { display: flex; gap: 14px; color: var(--gold); font-variant-numeric: tabular-nums; }
 .controls { display: flex; gap: 10px; align-items: center; margin-left: auto; flex-wrap: wrap; }
 .controls label { color: var(--muted); font-size: 13px; display: flex; gap: 4px; align-items: center; }
+/* The animation switch belongs with the other settings and should look like one. */
+.controls label.check { cursor: pointer; user-select: none; }
+.controls label.check input { accent-color: var(--gold); margin: 0; }
+/* Motion off. The table keeps its beat — the reveals run on timers, not on
+   animations — so this only removes the fades and the drops. */
+body.no-anim *, body.no-anim *::before, body.no-anim *::after {
+  animation: none !important; transition: none !important;
+}
 select, button {
   background: #123a26; color: var(--ink); border: 1px solid var(--line);
   border-radius: 6px; padding: 5px 10px; font-size: 13px; font-family: inherit;
@@ -249,6 +257,15 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
   position: absolute; inset: 0; z-index: 1;
   transform: rotate(90deg) translate(-2px, -2px);
   filter: drop-shadow(-2px 2px 2px rgba(0, 0, 0, 0.55));
+}
+/* A called set the table has not reached yet. In the layout, so nothing shifts
+   when it arrives, but not visible — a call is an action like any other and waits
+   for its own beat (see planBatch in app.js). */
+.melds .meld.queued { opacity: 0; }
+.melds .meld.landing { animation: meld-land 0.26s ease-out; }
+@keyframes meld-land {
+  from { opacity: 0; transform: translateY(-7px) scale(0.94); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 /* ---------- actions ---------- */
@@ -535,5 +552,5 @@ body.offline #action-bar button { opacity: 0.5; }
    not animate. */
 @media (prefers-reduced-motion: reduce) {
   .pond-grid .tile.arriving, #hand .tile.drawn.auto-target,
-  .tile.callable { animation: none; }
+  .tile.callable, .melds .meld.landing { animation: none; }
 }

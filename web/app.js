@@ -30,21 +30,21 @@ const DRAW_REASONS = {
   FourRiichi: "四家立直", FourKans: "四槓散了", TripleRon: "三家和了",
 };
 
-// How fast discards appear, in milliseconds per tile. The table plays the
-// server's events out one discard at a time instead of dropping a whole round on
-// screen at once: at machine speed nobody can follow who threw what.
+// How long one player's turn takes, in milliseconds. The server hands over a
+// whole batch at once — three bots answer instantly — so this is the clock the
+// client plays that batch back on: one beat per discard, and another for a call.
 //
-// The five steps and the 600 ms default are the reference client's: 電脳麻将's
-// `set speed(speed){ this.dwell = speed*200 }` with speed 1-5, default 3 — and
-// that dwell is its call window and the floor under every shout as well. Nothing
-// here goes below 200 ms, because under that two discards can be mid-animation
-// at once and the order they were thrown in stops reading.
+// The default is a full second per player, because a table that answers in a
+// frame is unreadable: you cannot see who threw what, and the next tile is in
+// your hand before the last three players have played. Faster settings exist for
+// someone who already knows the table; the floor is 450 ms, which is above the
+// 220 ms landing animation, so no two discards are ever mid-animation at once.
 const PACE_STEPS = [
-  { name: "极慢", ms: 1000 },
-  { name: "慢", ms: 800 },
-  { name: "正常", ms: 600 },
-  { name: "快", ms: 400 },
-  { name: "极快", ms: 200 },
+  { name: "极慢", ms: 1600 },
+  { name: "慢", ms: 1200 },
+  { name: "正常", ms: 1000 },
+  { name: "快", ms: 700 },
+  { name: "极快", ms: 450 },
 ];
 const PACE_DEFAULT = 2;
 let paceIndex = PACE_DEFAULT;
@@ -412,7 +412,12 @@ function handle(msg) {
       // A settlement panel is modal: keep the finished hand on the board behind
       // it instead of redrawing the next hand underneath the player while they
       // are still reading. The state is applied when the panel is dismissed.
-      if (settlementOpen() || boardHold) {
+      //
+      // `boardHold` on its own is no longer a reason to park a state: the table
+      // stops at the end of a hand, so the state that arrives with the settlement
+      // *is* the finished hand the panel is about — and it has to be rendered, or
+      // the ronned tile would never reach the table.
+      if (settlementOpen()) {
         pendingState = msg;
         break;
       }
@@ -453,6 +458,18 @@ function render() {
   if (!state) return;
   const view = state.view;
   const human = state.human;
+  // The batch this state belongs to, taken here and cleared at once: a later
+  // render (the score-delta timer, a panel closing) must not play it twice.
+  const batch = lastBatch;
+  lastBatch = [];
+  // Which melds in this view are new, per seat, so a call stays hidden until its
+  // own beat. A 加杠 *replaces* its 碰 rather than adding one, so it is not
+  // counted and the new shape shows a beat early — the rarest form, and the seat
+  // it came from never moves, so nothing is misread.
+  for (const e of batch) {
+    const m = e.Meld || (e.Kan && String(e.Kan.meld.kind) === "Ankan" ? e.Kan : null);
+    if (m) freshMelds[m.seat] = (freshMelds[m.seat] || 0) + 1;
+  }
   const roundKey = view.round_wind + ":" + view.round_number + ":" + view.honba;
   if (lastRoundKey !== null && roundKey !== lastRoundKey && lastScores) {
     // A round just ended: keep the deltas on screen for a few seconds. The
@@ -519,31 +536,41 @@ function render() {
         (p.riichi ? " · 立直" : "");
     }
   }
-  // Everything that answers this batch waits for the batch to be on screen: see
-  // `paceNewDiscards`. The hold has to start *before* the hand is drawn, because
-  // the hand decides whether its tiles are clickable.
-  const pausedMs = paceNewDiscards(PENDING_DISCARDS.splice(0));
-  if (pausedMs > 0) holdControls(pausedMs + 40);
+  // Everything that answers this batch waits for the batch to be on screen. The
+  // hold has to start *before* the hand is drawn, because the hand decides
+  // whether its tiles are clickable and whether the drawn tile is visible at all.
+  const { plan, lastAt } = planBatch(batch, PENDING_DISCARDS.splice(0));
+  if (lastAt > 0) holdControls(lastAt + 60);
   renderHand(view, human);
-  if (pausedMs > 0) {
-    // `holdControls`' timer draws them once the last tile has landed.
+  if (lastAt > 0) {
+    // The plan draws them once the last beat has landed.
     const bar = document.getElementById("action-bar");
     if (bar) bar.innerHTML = "";
     clearCallMarks();
   } else {
     releaseControls();
   }
+  runPlan(plan);
 }
 
 /// True while the controls are deliberately held back: either the table is still
 /// playing discards out, or a settlement is on screen.
 let controlsHeld = false;
+/// True only while the table is playing a batch out and the player's own turn has
+/// not come round yet. This is what hides the freshly drawn tile: the state
+/// already contains it (the server played the three bots instantly), but showing
+/// it now would put the player's next decision on screen while the opponents are
+/// still discarding. It is *not* the same as `controlsHeld`: when a hand ends the
+/// board is held too, and then the winner's drawn tile — the tile they just won on
+/// — must stay visible.
+let awaitingTurn = false;
 /// The pending hold, so a newer render replaces an older wait instead of
 /// stacking two timers that would each redraw the bar.
 let controlTimer = null;
 
 function holdControls(ms) {
   controlsHeld = true;
+  awaitingTurn = true;
   // A forced discard that is already counting down must not fire while the table
   // is still playing this batch out, and its "自动打出…" note must not sit there
   // pointing at a decision that is on hold: cancel both, and let
@@ -570,6 +597,7 @@ function stopForcedDecision() {
 function releaseControls() {
   if (controlTimer !== null) return;
   controlsHeld = false;
+  awaitingTurn = false;
   // A settlement that started during the wait owns the screen now; its own path
   // releases the controls once the player closes the last panel.
   if (boardHold || panelQueue.length || pendingSettlement.length || settlementOpen()) return;
@@ -587,6 +615,9 @@ function cancelControls() {
   clearTimeout(controlTimer);
   controlTimer = null;
   controlsHeld = true;
+  // The turn has arrived (or the hand is over), so the hand is drawn as it
+  // stands; only the controls stay away.
+  awaitingTurn = false;
   // Same reasoning as `holdControls`: a forced discard counting down belongs to
   // the hand that just ended, and playing it would send an action into the next
   // one.
@@ -654,7 +685,9 @@ function renderOpponent(slot, p, view, rel) {
   // the hand, so subtracting for melds again would show three tiles too few.
   const vertical = rel === 1 || rel === 3;
   slot.appendChild(backRow(p.hand_count, { vertical }));
-  if (p.melds && p.melds.length) slot.appendChild(meldRow(p.melds, true, p.seat));
+  if (p.melds && p.melds.length) {
+    slot.appendChild(meldRow(p.melds, true, p.seat, freshMelds[p.seat]));
+  }
 }
 
 /// The observer's own seat has no box of its own: the hand area at the bottom
@@ -849,10 +882,18 @@ function meldGroup(meld, seat, small) {
   return g;
 }
 
-function meldRow(melds, small, seat) {
+/// `hidden` is how many of the *last* sets are too new to show yet: a call is an
+/// action like any other and gets its own beat, so the set that a batch just made
+/// stays out of sight until the playback reaches it.
+function meldRow(melds, small, seat, hidden) {
   const wrap = document.createElement("div");
   wrap.className = "melds";
-  melds.forEach((m) => wrap.appendChild(meldGroup(m, seat, small)));
+  const first = melds.length - Math.min(hidden || 0, melds.length);
+  melds.forEach((m, i) => {
+    const g = meldGroup(m, seat, small);
+    if (i >= first) g.classList.add("queued");
+    wrap.appendChild(g);
+  });
   return wrap;
 }
 
@@ -867,44 +908,217 @@ function meldRow(melds, small, seat) {
 /// timer so a whole round does not appear at once.
 const shownDiscards = { 0: 0, 1: 0, 2: 0, 3: 0 };
 
+/// How many discards of each seat the table is allowed to be showing.
+///
+/// This is the *only* thing that decides whether a pond tile is visible, and it
+/// is deliberately a number rather than a class on an element: every render
+/// rebuilds the ponds, so a class would be thrown away with the element it was on
+/// and the whole batch would flash into view at the next render. A number
+/// survives, and `renderPond` re-derives the hidden tiles from it.
+const visibleDiscards = { 0: 0, 1: 0, 2: 0, 3: 0 };
+
+/// The pond a seat owns. The ponds are keyed by position on *this* player's
+/// screen, so the seat has to be turned into a relative one first.
+function pondForSeat(seat) {
+  return document.getElementById(pondForRel(relativeSeat(seat)));
+}
+
+/// Show every discard each seat's clock has reached, and hide the rest.
+function applyDiscardVisibility() {
+  for (const seat of [0, 1, 2, 3]) {
+    const pond = pondForSeat(seat);
+    if (!pond) continue;
+    const shown = visibleDiscards[seat] || 0;
+    [...pond.querySelectorAll(".pond-grid .tile")].forEach((el, i) => {
+      el.classList.toggle("queued", i >= shown);
+    });
+  }
+}
+
+/// Reveal one more discard of `seat`, with its landing animation.
+function revealDiscard(seat) {
+  visibleDiscards[seat] = (visibleDiscards[seat] || 0) + 1;
+  const pond = pondForSeat(seat);
+  const el = pond && [...pond.querySelectorAll(".pond-grid .tile")][visibleDiscards[seat] - 1];
+  applyDiscardVisibility();
+  if (!el) return;
+  el.classList.add("arriving");
+  setTimeout(() => el.classList.remove("arriving"), 220);
+}
+
 function pace() {
   return PACE_STEPS[paceIndex].ms;
 }
 
-/// Reveal this batch's new discards **in the order they were thrown**, one seat
-/// at a time.
+/// The melds each seat gains in the batch being played back, so a call is shown
+/// on its own beat instead of the instant the state arrives.
+const freshMelds = { 0: 0, 1: 0, 2: 0, 3: 0 };
+
+/// The seat box on this player's screen, by relative position.
+const SEAT_SLOT_IDS = ["seat-self", "seat-right", "seat-across", "seat-left"];
+
+function meldBoxForSeat(seat) {
+  if (state && seat === state.human) return document.getElementById("melds-self");
+  const slot = document.getElementById(SEAT_SLOT_IDS[relativeSeat(seat)]);
+  return slot ? slot.querySelector(".melds") : null;
+}
+
+/// Show the oldest meld this seat is still hiding, on the beat its call happened.
+function revealMeld(seat) {
+  const box = meldBoxForSeat(seat);
+  if (!box) return;
+  const g = box.querySelector(".meld.queued");
+  if (!g) return;
+  g.classList.remove("queued");
+  g.classList.add("landing");
+  setTimeout(() => g.classList.remove("landing"), 260);
+}
+
+/// Work out how a batch plays out, without touching the DOM.
 ///
-/// The state is authoritative and applied at once — only the appearance of new
-/// tiles is paced. Pacing per pond was not enough: one discard per pond then all
-/// land at the same instant, which is exactly the "everyone plays at light speed"
-/// feel. The order comes from the event list, so the table shows
-/// self → right → across → left the way the hand actually went.
+/// One beat per discard and one per call: the three bots answer instantly, and
+/// playing their whole turn inside a frame is what made the table unreadable —
+/// the player's next tile was in their hand before the opponents had discarded.
+/// Two things are timed relative to those beats rather than fired on arrival:
 ///
-/// Returns how long the last tile still has to wait: everything that *answers*
-/// this batch — a call button, the hint naming the tile it is about, a forced
-/// discard — has to wait with it, or the button appears over a pond that has not
-/// shown the tile yet. At the slowest step that is nearly three seconds early.
-function paceNewDiscards(pending) {
-  if (!pending.length) return 0;
+///   * a 荣和 is announced once the discard it happened on has landed — never
+///     before, or the shout names a tile the player cannot see yet;
+///   * a 自摸 costs one extra beat, because it follows that player's draw, so the
+///     shout comes when the turn has actually reached them.
+///
+/// Returns the plan and the time the last *visible* step lands, which is when the
+/// player's own turn may start.
+/// When the table last advanced, on `performance.now()`'s clock — both the beat
+/// that has *fired* and the last beat the running plan still owes. The beat is
+/// global rather than per batch: a new state can arrive the instant the previous
+/// plan finished (the player answers a call window in a few hundred
+/// milliseconds), and the next discard must still get its own beat instead of
+/// landing on top of the last one.
+///
+/// Two values are needed, not one. A plan whose steps are still queued would be
+/// walked over by the next plan if only the fired time counted; and a step that
+/// fired *late* (a busy frame, a repaint) would let the next plan start a beat
+/// early if only the scheduled time counted. Both were visible as two discards
+/// landing ~100 ms apart.
+let lastBeatAt = 0;
+let lastPlannedBeatAt = 0;
+
+function planBatch(batch, pending) {
   const step = pace();
-  const order = [];
-  const events = (state && state.view && state.view.events) || [];
+  const now = performance.now();
+  // Start the plan no earlier than one beat after the previous batch's last
+  // step, so "a second per player" holds across batch boundaries too.
+  const lead = Math.max(0, Math.max(lastBeatAt, lastPlannedBeatAt) + step - now);
+  const events = (batch && batch.length)
+    ? batch
+    : ((state && state.view && state.view.events) || []);
+  const queue = pending.slice();
+  const plan = [];
+  let clock = 0;
+  const add = (at, what, seat, kind) => {
+    plan.push({ at: at + lead, what, seat, kind });
+  };
+
   for (const e of events) {
-    if (!e.Discard) continue;
-    const i = pending.findIndex((p) => p.seat === e.Discard.seat && p.tile === e.Discard.tile);
-    if (i >= 0) order.push(pending.splice(i, 1)[0]);
+    if (e.Discard) {
+      const d = e.Discard;
+      const i = queue.findIndex((p) => p.seat === d.seat && p.tile === d.tile);
+      if (i >= 0) {
+        add(clock, "discard", d.seat);
+        queue.splice(i, 1);
+      }
+      clock += step;
+    } else if (e.Meld || e.Kan) {
+      // A call is two steps, the way it is at a table: the shout, then the tiles
+      // assembled. 電脳麻将's replay does the same (`say()` first, tiles on the
+      // next entry).
+      const m = e.Meld || e.Kan;
+      add(clock, "shout", m.seat, String(m.meld ? m.meld.kind : m.kind));
+      clock += step;
+      add(clock, "call", m.seat);
+      clock += step;
+    } else if (e.Win) {
+      const ron = e.Win.from !== null && e.Win.from !== undefined;
+      if (!ron) clock += step;          // the turn has to reach the winner first
+      add(clock, "headline", e.Win.seat);
+    } else if (e.Riichi) {
+      // 「リーチ」 comes *before* the tile goes down — that is the order at a real
+      // table, and the sideways tile is only the proof of it. Shout in the beat
+      // the declarer's discard was going to take, and push that discard (with
+      // everything queued behind it) one beat later.
+      const at = lastDiscardAt(plan, e.Riichi.seat);
+      if (at === null) {
+        add(clock, "headline", e.Riichi.seat);
+      } else {
+        for (const s of plan) if (s.at >= at) s.at += step;
+        plan.push({ at, what: "headline", seat: e.Riichi.seat });
+        clock += step;
+      }
+    } else if (e.Ryuukyoku) {
+      add(clock, "headline", undefined);
+    }
+    // A 加杠's dora indicator (`DoraRevealed`) is not staged: the tile is already
+    // drawn in the centre panel, and it arrives with the kan that turned it.
   }
-  order.push(...pending);
-  order.forEach((p, idx) => {
-    p.el.classList.add("queued");
-    const delay = idx * step;
-    setTimeout(() => {
-      p.el.classList.remove("queued");
-      p.el.classList.add("arriving");
-      setTimeout(() => p.el.classList.remove("arriving"), 220);
-    }, delay);
+  // Anything the batch did not account for — a state with no events to pair it
+  // with, a resumed game — still has to be revealed, and on its own beats *after*
+  // everything the batch does describe. Guessing "first" would put an unknown
+  // tile on the same beat as a known one, and two tiles appearing together is the
+  // exact thing this clock exists to prevent.
+  for (const p of queue) {
+    add(clock, "discard", p.seat);
+    clock += step;
+  }
+  // The beats are read off the finished plan, because the 立直 shift above moves
+  // steps: `lastBeat` is when the table may act again, and the player's own turn
+  // starts after the last step that is not a shout.
+  let lastBeat = 0;
+  let turnAt = 0;
+  for (const s of plan) {
+    lastBeat = Math.max(lastBeat, s.at);
+    if (s.what !== "headline") turnAt = Math.max(turnAt, s.at);
+  }
+  lastPlannedBeatAt = now + lastBeat;
+  return { plan, lastAt: turnAt };
+}
+
+/// The beat a seat's most recent discard sits on, or null if it has none.
+function lastDiscardAt(plan, seat) {
+  let at = null;
+  for (const s of plan) {
+    if (s.what === "discard" && s.seat === seat) at = s.at;
+  }
+  return at;
+}
+
+/// Start a plan running. Steps address elements by seat and index rather than
+/// closing over them, because a render can replace every tile on the table
+/// between one step and the next.
+function runPlan(plan) {
+  plan.forEach((s) => {
+    if (s.at <= 0) { runStep(s); return; }
+    setTimeout(() => runStep(s), s.at);
   });
-  return (order.length - 1) * step;
+}
+
+function runStep(s) {
+  if (s.what === "discard") revealDiscard(s.seat);
+  else if (s.what === "call") revealMeld(s.seat);
+  else if (s.what === "shout") announceCall(s.seat, s.kind);
+  else if (s.what === "headline") showHeadline();
+  // The table advanced here, *now* — not when the step was planned. A step that
+  // ran late must push everything after it back, or the next batch lands on top
+  // of it.
+  if (s.what !== "headline") lastBeatAt = performance.now();
+}
+
+/// One short shout over the seat that called, a beat before its tiles are
+/// assembled: the same two steps a real table takes, and the same two steps
+/// 電脳麻将's replay takes (`say()` first, tiles on the next entry).
+function announceCall(seat, kind) {
+  const word = ENGINE_MELD[String(kind || "").toLowerCase()];
+  if (!word) return;
+  announce(word, seatName(seat), 760, seat);
 }
 
 function renderPond(frame, discards, rotDeg, seat) {
@@ -935,6 +1149,12 @@ function renderPond(frame, discards, rotDeg, seat) {
   });
 
   const last = n - 1;
+  // A new hand starts with fewer discards than the last one ended with. The clock
+  // has to follow the pond down, or every tile of the new hand would be revealed
+  // the moment it appeared.
+  if (seat !== undefined && n < (visibleDiscards[seat] || 0)) visibleDiscards[seat] = n;
+  const shown = seat === undefined ? n : (visibleDiscards[seat] || 0);
+
   discards.forEach((d, i) => {
     let extra = "";
     if (d.called_by !== null && d.called_by !== undefined) extra += " called";
@@ -945,12 +1165,15 @@ function renderPond(frame, discards, rotDeg, seat) {
     // movement would read as a fresh discard.
     if (d.tsumogiri) extra += " tsumogiri";
     if (i === last) extra += " fresh";
+    // Not played yet as far as the table is concerned: laid out, so the pond does
+    // not reflow when it lands, but not visible.
+    if (i >= shown) extra += " queued";
     grid.appendChild(tileEl(d.tile, { small: true, extra }));
   });
   if (seat !== undefined) {
-    const shown = shownDiscards[seat] || 0;
+    const seen = shownDiscards[seat] || 0;
     const tiles = [...grid.querySelectorAll(".tile")];
-    for (let i = shown; i < tiles.length; i++) {
+    for (let i = seen; i < tiles.length; i++) {
       PENDING_DISCARDS.push({ seat, el: tiles[i],
                               tile: Number(tiles[i].dataset.tile) });
     }
@@ -970,7 +1193,9 @@ function renderHand(view, human) {
   meldsEl.innerHTML = "";
   // Called sets are gone from `me.hand`, so without this the tiles a call took
   // would simply vanish from the board.
-  if (me.melds && me.melds.length) meldsEl.appendChild(meldRow(me.melds, true, human));
+  if (me.melds && me.melds.length) {
+    meldsEl.appendChild(meldRow(me.melds, true, human, freshMelds[human]));
+  }
 
   const decision = state.decision;
   // `controlsHeld` covers the paced hold too: while the table is still playing
@@ -986,12 +1211,20 @@ function renderHand(view, human) {
   const locked = !!me.riichi;
 
   // The drawn tile is rendered separately, slightly offset.
+  //
+  // While the table is still playing this batch out, it is not rendered at all.
+  // The state says the player has already drawn — the server played the three
+  // bots instantly — but showing it here is what made the table feel like it was
+  // skipping the opponents' turns: their tiles were still landing in the ponds
+  // while the player's next tile, and the decision that goes with it, were
+  // already on screen. The hand waits for its own turn, like every other client.
   let hand = (me.hand || []).slice();
   let drawn = me.drawn;
   if (drawn !== null && drawn !== undefined) {
     const idx = hand.indexOf(drawn);
     if (idx >= 0) hand.splice(idx, 1);
   }
+  if (awaitingTurn) drawn = null;
 
   const clickTile = (tile) => () => {
     const act = findDiscardAction(tile, riichiMode);
@@ -1235,8 +1468,20 @@ function renderActions() {
 
 // ---------------------------------------------------------------- log / events
 
+/// The batch of events the state we are about to render belongs to. The server
+/// sends it immediately before the state, and it is the only reliable record of
+/// what happened in what order — including the things that leave no trace in the
+/// view (a draw, a pass) and the things that must not be shown before their cause
+/// (a 荣和, a 自摸).
+let lastBatch = [];
+
+/// The shout and settlement this batch owes the player, staged rather than fired:
+/// it is shown when the playback reaches the beat it belongs to.
+let pendingHeadline = null;
+
 function absorbEvents(events) {
   if (!events.length) return;
+  lastBatch = events;
   const logEl = document.getElementById("log");
   events.forEach((e) => {
     const line = describeEvent(e);
@@ -1264,13 +1509,16 @@ function absorbEvents(events) {
     if (riichi.length) {
       const who1 = riichi.map((e) => botNames[e.Riichi.seat] || "对手").join("、");
       // The seat of the (first) declarer is where the banner belongs.
-      announce("立直", who1, undefined, riichi[0].Riichi.seat);
+      pendingHeadline = { shout: { text: "立直", sub: who1, seat: riichi[0].Riichi.seat } };
     }
     return;
   }
 
-  // A hand ended. Hold the board on the finished hand until the last panel has
-  // been read, then let the next round's state through.
+  // A hand ended. The board is held on the finished hand — no controls, no
+  // decisions — but the state that goes with it is still rendered: with the table
+  // paused at the hand's end (see the server's `awaiting_ack`), that state *is*
+  // the finished hand, so the winning tile is on the table before the panel
+  // covers it. The shout and the panel are staged onto the playback below.
   holdBoard();
   const queue = [];
   // The announcement comes first and the settlement follows it: a big 自摸 in
@@ -1280,7 +1528,8 @@ function absorbEvents(events) {
   // The wait is one beat of the table's own pace plus 400 ms — the reference
   // client's rule — with a floor, because the panel covers the middle of the
   // table and a shout nobody managed to read is worse than a pause.
-  let announceMs = Math.max(800, pace() + 400);
+  let announceMs = Math.max(900, pace() + 400);
+  let shout = null;
   if (wins.length) {
     // Settle winners in play order from the discarder: that is counter-clockwise
     // at the table, and it is the order every ruleset describes.
@@ -1295,17 +1544,18 @@ function absorbEvents(events) {
       // Two ron is the common case; three is normally aborted by the engine as
       // 三家和了, so the third panel only appears if the rules allow it. Two
       // settlements need longer than one before the first panel covers the shout.
-      announceMs = Math.max(1200, pace() + 900);
-      announce(wins.length === 2 ? "双响" : "三响", settled.map((w) => botNames[w.seat]).join("、"),
-               announceMs, settled[0].seat);
+      announceMs = Math.max(1300, pace() + 900);
+      shout = { text: wins.length === 2 ? "双响" : "三响",
+                sub: settled.map((w) => botNames[w.seat]).join("、"),
+                seat: settled[0].seat, ms: announceMs };
     } else {
       const w = wins[0];
       const ron = w.from !== null && w.from !== undefined;
       if (w.nagashi) {
-        announce("流局满贯", botNames[w.seat] || "", undefined, w.seat);
+        shout = { text: "流局满贯", sub: botNames[w.seat] || "", seat: w.seat };
       } else {
-        announce(ron ? "荣和" : "自摸", `${botNames[w.seat] || ""} ${friendlyTileName(w.tile)}`,
-                 undefined, w.seat);
+        shout = { text: ron ? "荣和" : "自摸",
+                  sub: `${botNames[w.seat] || ""} ${friendlyTileName(w.tile)}`, seat: w.seat };
       }
     }
   } else if (draw) {
@@ -1313,20 +1563,52 @@ function absorbEvents(events) {
     queue.push({ kind: "draw", data: dd });
     const sub = (DRAW_REASONS[dd.reason] || "")
       + (dd.by !== null && dd.by !== undefined ? ` · ${botNames[dd.by] || ""} 宣布` : "");
-    announce(dd.reason === "Exhaustive" ? "流局" : "途中流局", sub, announceMs);
+    shout = { text: dd.reason === "Exhaustive" ? "流局" : "途中流局", sub, ms: announceMs };
   }
+  pendingHeadline = { shout, queue, announceMs };
+
+  // Watchdog. The playback normally shows this within a few beats, but the table
+  // is *paused* until the player has read the settlement (see the server's
+  // `awaiting_ack`), so a shout that never reached the screen would leave the
+  // match stopped with nothing to click — for instance if the state message that
+  // carries the batch's discards never arrives. This is the net under that.
+  clearTimeout(headlineWatchdog);
+  headlineWatchdog = setTimeout(() => {
+    if (pendingHeadline) showHeadline();
+  }, Math.max(6000, pace() * 8 + 2000));
+}
+
+let headlineWatchdog = null;
+
+/// Play the staged shout and settlement, once the playback has reached the beat
+/// they belong to. A 荣和 waits for the tile it happened on; a 自摸 for the turn.
+function showHeadline() {
+  const h = pendingHeadline;
+  if (!h) return;
+  pendingHeadline = null;
+  clearTimeout(headlineWatchdog);
+  if (h.shout) announce(h.shout.text, h.shout.sub, h.shout.ms, h.shout.seat);
+  if (!h.queue || !h.queue.length) return;
   clearTimeout(settleTimer);
-  pendingSettlement = queue;
+  pendingSettlement = h.queue;
   settleTimer = setTimeout(() => {
     pendingSettlement = [];
-    enqueueSettlements(queue);
-  }, announceMs);
+    enqueueSettlements(h.queue);
+  }, h.announceMs || 1000);
 }
 
 let settleTimer = null;
 /// Settlements waiting for their announcement to finish. Kept so a match ending
 /// in that window cannot swallow them.
 let pendingSettlement = [];
+
+/// The player has read the last panel of a finished hand: tell the server it may
+/// deal the next one. The table is paused at the hand's end (the server plays no
+/// further until this arrives), which is what keeps the *finished* hand on the
+/// board instead of the next round's opening.
+function askContinue() {
+  send({ type: "continue" });
+}
 
 // ------------------------------------------------------- settlement queue
 
@@ -1348,9 +1630,13 @@ function dismissPanel() {
   if (wasSettlement) panelQueue.shift();
   document.getElementById("overlay").classList.add("hidden");
   if (!showNextPanel()) {
-    // Nothing left to read: release the board so the next hand appears.
+    // Nothing left to read: release the board, and ask the table for the next
+    // hand. Nothing moves on the server until it is asked — it is paused at the
+    // hand's end — so this is what starts the next round, and it starts it from
+    // the deal rather than from wherever the bots had already got to.
     boardHold = false;
     applyPendingState();
+    if (wasSettlement) askContinue();
   }
 }
 
@@ -2039,6 +2325,24 @@ document.addEventListener("DOMContentLoaded", () => {
     paceIndex = savedPace;
   }
   document.getElementById("sel-pace").value = String(paceIndex);
+
+  // Motion on or off. "Off" removes the animation, not the beat: the table still
+  // plays one discard at a time, because that pacing is what makes the hand
+  // readable — only the fades and drops go away. The first value comes from the
+  // system preference, so a player who asked their OS for less motion gets it
+  // without looking for the switch. (SEGA NET MJ, しらぎく麻雀 both ship an
+  // effects toggle; this is the same idea for a browser table.)
+  const animBox = document.getElementById("chk-anim");
+  const setAnim = (on) => {
+    document.body.classList.toggle("no-anim", !on);
+    if (animBox) animBox.checked = on;
+    localStorage.setItem("mmj-anim", on ? "1" : "0");
+  };
+  const savedAnim = localStorage.getItem("mmj-anim");
+  const prefersLess = window.matchMedia
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  setAnim(savedAnim === null ? !prefersLess : savedAnim === "1");
+  if (animBox) animBox.addEventListener("change", () => setAnim(animBox.checked));
   // The hint costs a network evaluation and a baseline search on the server, so
   // ignore repeat presses instead of queueing them.
   let hintAskedAt = 0;

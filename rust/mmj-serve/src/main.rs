@@ -360,6 +360,16 @@ struct Session {
     agents: [Box<dyn Agent>; 4],
     human: u8,
     seed: u64,
+    /// A hand has ended and the client has not said it is done reading the
+    /// settlement. Nothing advances until it does.
+    ///
+    /// Bots answer instantly, so without this the table played the next round
+    /// before the player had seen the end of the last one: the state the client
+    /// got back was the *next* round, and the board behind the settlement panel
+    /// could not show the tile that had just won the hand. Pausing here is what
+    /// lets the client stage the ending — the ronned tile lands in the pond, the
+    /// shout follows it, and only then does the panel cover the table.
+    awaiting_ack: bool,
 }
 
 fn make_agent(
@@ -416,10 +426,19 @@ impl Session {
             agents,
             human: seat,
             seed,
+            awaiting_ack: false,
         }
     }
 
-    /// Let every bot act until the human must decide, or the match ends.
+    /// Did this batch of events end the hand?
+    fn hand_ended(events: &[Event]) -> bool {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::Win { .. } | Event::Ryuukyoku { .. }))
+    }
+
+    /// Let every bot act until the human must decide, the hand ends, or the
+    /// match ends.
     fn advance(&mut self) -> Vec<Event> {
         let mut events = Vec::new();
         let mut guard = 0usize;
@@ -446,8 +465,16 @@ impl Session {
                 };
                 match self.table.submit(d.seat, action) {
                     Ok(ev) => {
+                        let ended = Session::hand_ended(&ev);
                         events.extend(ev);
                         acted = true;
+                        // The hand ended and nothing is left to decide (a double
+                        // ron is settled in full, both winners in one batch), so
+                        // stop here: see `awaiting_ack`.
+                        if ended && self.table.decisions().is_empty() {
+                            self.awaiting_ack = true;
+                            return events;
+                        }
                     }
                     Err(e) => {
                         eprintln!("internal error: {}", e);
@@ -638,6 +665,10 @@ enum ClientMsg {
         action: Action,
     },
     Hint,
+    /// "I have read the settlement; deal the next hand." Sent by the client when
+    /// the last panel of a finished hand is dismissed. A no-op when the table is
+    /// not waiting, so a stale client cannot skip anything.
+    Continue,
 }
 
 async fn handle_socket(socket: WebSocket, checkpoints: CheckpointSource) {
@@ -733,7 +764,43 @@ async fn handle_socket(socket: WebSocket, checkpoints: CheckpointSource) {
                         continue;
                     }
                 };
-                events.extend(s.advance());
+                // The player's own move can end the hand (their tsumo, their ron,
+                // their last discard exhausting the wall). Bots then must not
+                // play on into the next round: see `awaiting_ack`.
+                if Session::hand_ended(&events) && s.table.decisions().is_empty() {
+                    s.awaiting_ack = true;
+                } else {
+                    events.extend(s.advance());
+                }
+                if !events.is_empty() {
+                    send_json!(json!({ "type": "events", "events": events }));
+                }
+                // The result of the match waits for the settlement too: sending
+                // it here would put "对局结束" on top of the last hand's panel.
+                if s.table.finished && !s.awaiting_ack {
+                    let replay = s.save_replay();
+                    let mut result = s.result_message();
+                    if let Some(p) = replay {
+                        result["replay"] = json!(p.display().to_string());
+                    }
+                    send_json!(result);
+                }
+                // Always re-render, including on the final hand: the result
+                // overlay sits on top of the board, and the board behind it must
+                // show the finished round rather than the last decision.
+                send_json!(s.state_message());
+            }
+            ClientMsg::Continue => {
+                let Some(s) = session.as_mut() else { continue };
+                if !s.awaiting_ack {
+                    // Nothing is waiting (a stale click, or the player dismissed
+                    // a panel that was not a settlement). Re-send the state so
+                    // the client is never left guessing.
+                    send_json!(s.state_message());
+                    continue;
+                }
+                s.awaiting_ack = false;
+                let events = s.advance();
                 if !events.is_empty() {
                     send_json!(json!({ "type": "events", "events": events }));
                 }
@@ -745,9 +812,6 @@ async fn handle_socket(socket: WebSocket, checkpoints: CheckpointSource) {
                     }
                     send_json!(result);
                 }
-                // Always re-render, including on the final hand: the result
-                // overlay sits on top of the board, and the board behind it must
-                // show the finished round rather than the last decision.
                 send_json!(s.state_message());
             }
             ClientMsg::Hint => {

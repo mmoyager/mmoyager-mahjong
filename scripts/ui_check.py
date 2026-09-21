@@ -22,6 +22,7 @@ Two modes:
     python3 scripts/ui_check.py paint    # every tile on screen actually paints
     python3 scripts/ui_check.py pace     # discards paced per seat, call marker, forced discard
     python3 scripts/ui_check.py meld     # 副露 layout: 暗杠 backs, sideways-tile slot, 加杠 stack
+    python3 scripts/ui_check.py stage    # a batch is played out: beats, no early draw, late shouts
 
 `fit` is the regression check for layout; `play` is the end-to-end check for
 rounds, wins, draws, calls and the final overlay; `riichi` is the rules check
@@ -56,7 +57,13 @@ CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 # die when that run closed it. UI_CHECK_PORT overrides.
 PORT = int(os.environ.get("UI_CHECK_PORT", 9416 + (os.getpid() % 400)))
 SIZES = ["1600,1000", "1440,900", "1280,800", "1152,720"]
+# How long a game-driven check may take. The table plays one beat per action now
+# (the server hands over a whole batch and the client stages it), so a hand takes
+# roughly twice as long as it did when the check could rely on the bots answering
+# instantly. The timing-sensitive checks are `pace` and `stage`; the rest run at
+# the fastest beat and only need the game to move.
 PLAY_SECONDS = 420
+MATCH_SECONDS = 900
 
 # --- the two probes -------------------------------------------------------
 
@@ -227,6 +234,17 @@ class Browser:
         await self.ev(f"document.getElementById('sel-length').value = '{length}';"
                       "document.getElementById('btn-new').click()")
 
+    async def pace_to(self, index):
+        """Set the table's beat.
+
+        The long game-driven checks (a whole 東風戦, a half game, a match) run at
+        the fastest step so they finish in minutes; the *default* one-second beat
+        is what `stage` and `pace` measure, and those are the checks that care
+        about timing.
+        """
+        await self.ev(f"document.getElementById('sel-pace').value = '{index}';"
+                      "document.getElementById('sel-pace').dispatchEvent(new Event('change'))")
+
     async def play(self, turns):
         """Click through `turns` human decisions, letting the bots move."""
         for _ in range(turns):
@@ -248,6 +266,7 @@ async def dismiss_panels(b, tries=6):
 async def check_fit():
     failures = []
     async with Browser("1600,1000") as b:
+        await b.pace_to(4)
         await b.new_game()
         await b.play(12)
         # A settlement panel is modal: it covers the buttons on purpose, so it
@@ -290,6 +309,7 @@ async def check_fit():
 async def check_play():
     failures = []
     async with Browser("1440,900") as b:
+        await b.pace_to(4)
         await b.new_game("tonpuu")
         t0 = time.time()
         actions = {}
@@ -384,6 +404,7 @@ async def check_riichi():
     riichi_banners = 0
     violations = []
     async with Browser("1440,900") as b:
+        await b.pace_to(4)
         await b.new_game("tonpuu")
         t0 = time.time()
         armed = False
@@ -466,6 +487,7 @@ async def check_panels():
     button, a seat box that clips its own tiles, a help dialog that does not."""
     failures = []
     async with Browser("1440,900") as b:
+        await b.pace_to(4)
         await b.new_game("tonpuu")
 
         # 1. the shortcut dialog
@@ -731,6 +753,7 @@ async def check_settle():
     stats = {"own-tsumo": 0, "own-ron": 0, "own-draw": 0, "bot-win": 0,
              "draw": 0, "draw-paid": 0, "panels": 0}
     async with Browser("1440,900") as b:
+        await b.pace_to(4)
         await b.new_game("tonpuu")
         t0 = time.time()
         pending = None
@@ -768,14 +791,19 @@ async def check_settle():
                         failures.append(f"win settlement shows no hand ({title}): {after['text']}")
                     painted = json.loads(await b.ev("""JSON.stringify((() => {
                         const ts = [...document.querySelectorAll('#overlay-body .tile')];
-                        return {n: ts.length, painted: ts.filter(t => {
+                        // A face-down tile (the outer two of an 暗槓) has no
+                        // printed face on purpose, so it is not "unpainted".
+                        const up = ts.filter(t => !t.classList.contains('down'));
+                        return {n: ts.length, faceUp: up.length,
+                                painted: up.filter(t => {
                             const f = t.querySelector('.tile-face');
                             return f && getComputedStyle(f).backgroundImage.includes('/tiles/');
                         }).length};
                     })())"""))
-                    if painted["painted"] < painted["n"]:
+                    if painted["painted"] < painted["faceUp"]:
                         failures.append(
-                            f"settlement hand tiles do not paint ({painted['painted']}/{painted['n']})")
+                            f"settlement hand tiles do not paint "
+                            f"({painted['painted']}/{painted['faceUp']} face-up of {painted['n']})")
                 step = str(await b.ev(SETTLE_STEP))   # dismiss the panel
                 pending = None
                 await asyncio.sleep(0.05)
@@ -798,13 +826,25 @@ async def check_settle():
         # An abortive draw ends the hand with the wall nearly full, which reads
         # as a bug unless the panel says who declared it, why, and how much wall
         # was left. The event shape injected here is the server's own.
-        await b.ev("(() => handle({type: 'events', events: [{Ryuukyoku: "
+        # The shout and the panel are staged on the playback clock, and `render`
+        # is what starts a plan for a batch — in a real game the state message
+        # that follows the events does that.
+        await b.ev("(() => { handle({type: 'events', events: [{Ryuukyoku: "
                    "{reason: 'NineTerminals', tenpai: [false, false, false, false], "
-                   "deltas: [0, 0, 0, 0], by: 1, wall_remaining: 66}}]}))()")
-        await asyncio.sleep(2.0)
-        abort = json.loads(await b.ev('''JSON.stringify({
-            title: document.getElementById("overlay-title").textContent,
-            text: document.getElementById("overlay-body").textContent.replace(/\s+/g, " ")})'''))
+                   "deltas: [0, 0, 0, 0], by: 1, wall_remaining: 66}}]});"
+                   " render(); })()")
+        # The panel is staged on the playback clock, so it can be a few beats
+        # behind the injection: wait for *this* panel rather than for a fixed
+        # time, or a real hand's settlement still on screen gets read instead.
+        abort = {"title": "", "text": ""}
+        for _ in range(80):
+            got = json.loads(await b.ev('''JSON.stringify({
+                title: document.getElementById("overlay-title").textContent,
+                text: document.getElementById("overlay-body").textContent.replace(/\s+/g, " ")})'''))
+            if "九种九牌" in got["text"]:
+                abort = got
+                break
+            await asyncio.sleep(0.15)
         print(f"  abort panel: {abort['title']} :: {abort['text'][:100]}")
         if "九种九牌" not in abort["text"] or "宣布" not in abort["text"]:
             failures.append(f"an abort does not name its reason and declarer: {abort['text'][:90]}")
@@ -921,6 +961,7 @@ async def check_multi():
     """Announcements and the settlement of several winners, one panel each."""
     failures = []
     async with Browser("1440,900") as b:
+        await b.pace_to(4)
         await b.new_game("tonpuu")
         await b.ev(DOUBLE_RON)
         banners, panels = [], []
@@ -992,6 +1033,7 @@ async def check_multi():
             absorbEvents([{Win: {seat: 1, from: 0, tile: 4, score, deltas: [0, 0, 0, 0],
                 riichi_sticks_taken: 0, paid: 1000, pao_payer: null, nagashi: false,
                 hand: [0, 4, 8, 12], melds: []}}]);
+            render();
             handle({type: 'game_end', scores: [0, 0, 0, 0], ranking: [0, 1, 2, 3], rounds: 8});
         })()""")
         await asyncio.sleep(0.3)
@@ -1071,12 +1113,15 @@ async def check_seats():
                 failures.append(f"seat {seat}: dealer marks = {st['dealerMarks']} (+self {st['selfDealer']})")
 
         # A full half game, which also exercises 南 rounds, dealer repeats and
-        # the 撃飛 end condition.
+        # the 撃飛 end condition. A 半荘 is up to eight hands and the table now
+        # plays a beat per action, so this needs the longer budget: it is the
+        # slowest check in the suite by design.
+        await b.pace_to(4)
         await b.ev("document.getElementById('sel-seat').value = '0';"
                    "document.getElementById('btn-new').click()")
         await asyncio.sleep(1.5)
         rounds, t0, final = [], time.time(), None
-        while time.time() - t0 < PLAY_SECONDS:
+        while time.time() - t0 < MATCH_SECONDS:
             st = json.loads(await b.ev(SEAT_STATUS))
             tag = (st["round"], st["honba"])
             if not rounds or rounds[-1] != tag:
@@ -1126,7 +1171,7 @@ async def check_match():
                    "document.getElementById('btn-new').click()")
         await asyncio.sleep(1.2)
         t0, order, last = time.time(), [], None
-        while time.time() - t0 < PLAY_SECONDS:
+        while time.time() - t0 < MATCH_SECONDS:
             st = json.loads(await b.ev(MATCH_STATUS))
             if st["panel"] and st["panel"] != last:
                 order.append(st["panel"])
@@ -1199,6 +1244,7 @@ async def check_tiles():
     # the tile shows its plain body. Every other kind must paint something.
     BLANK_KINDS = {31}
     async with Browser("1280,800") as b:
+        await b.pace_to(4)
         await b.new_game("tonpuu")
         await asyncio.sleep(1.0)
         res = json.loads(await b.ev(TILE_PROBE))["kinds"]
@@ -1266,6 +1312,7 @@ async def check_paint():
     """
     failures = []
     async with Browser("1280,800") as b:
+        await b.pace_to(4)
         await b.new_game("tonpuu")
         # Give the faces a moment: they are probes, so a brand-new hand paints a
         # frame or two late. A gap that survives a second is a bug.
@@ -1297,6 +1344,7 @@ async def check_paint():
         await b.ev("document.getElementById('overlay').classList.add('hidden')")
         await b.call("Network.enable")
         await b.call("Network.setBlockedURLs", {"urls": ["*/tiles/*"]})
+        await b.pace_to(4)
         await b.new_game("tonpuu")
         await asyncio.sleep(2.5)
         fallback = json.loads(await b.ev("""JSON.stringify((() => {
@@ -1553,6 +1601,7 @@ async def check_meld():
         # And on the real table: call whenever a call is offered, so the check
         # sees real 副露 rather than waiting for the bots to open a hand (the
         # trained agents mostly stay closed).
+        await b.pace_to(4)
         await b.new_game("tonpuu")
         found = []
         called = []
@@ -1578,6 +1627,238 @@ async def check_meld():
                 f"{MELD_NAMES.get(m['kind'], m['kind'])} n={m['n']} "
                 f"slot={m['rot'] + 1} down={m['down']} {m['label']}" for m in found[:4]))
             failures.extend(meld_live_failures(found))
+        if b.problems:
+            failures.append(f"{len(b.problems)} page exceptions (first: {b.problems[0]})")
+        if b.console:
+            failures.append(f"{len(b.console)} console errors (first: {b.console[0]})")
+        return failures
+
+
+# --- staging a hand: the playback clock --------------------------------------
+
+# The table must play a batch out rather than render it. Two failures this
+# catches, both reported by the player and both invisible to a check that only
+# looks at the finished picture:
+#
+#   * the freshly drawn tile appearing while the opponents' discards are still
+#     landing — the player's next decision on screen before the table had played;
+#   * a 荣和 shouted before the tile it happened on was in the pond.
+#
+# Timing is measured *in the page*: the probes below wrap the client's own
+# playback steps and watch with a 20 ms interval, because a DevTools round trip
+# per sample is slower than the beats being measured.
+STAGE_HOOKS = r"""
+(() => {
+  if (window.__stage) return 'already';
+  const S = {events: [], violations: [], marks: {}, plans: []};
+  window.__stage = S;
+  const now = () => Math.round(performance.now());
+  const queuedPerSeat = () => [0, 1, 2, 3].map(s => {
+    const pond = document.getElementById(pondForRel(relativeSeat(s)));
+    return pond ? pond.querySelectorAll('.tile.queued').length : -1;
+  });
+  const wrapStep = (name) => {
+    const orig = window[name];
+    if (typeof orig !== 'function') return;
+    window[name] = function (arg) {
+      if (name === 'revealDiscard') {
+        S.events.push({t: now(), what: 'discard', seat: arg});
+      } else if (name === 'revealMeld') {
+        S.events.push({t: now(), what: 'call', seat: arg});
+      } else if (name === 'showHeadline') {
+        // Read what is about to be shouted and what the table still owes the
+        // player: a shout that arrives with discards still in the queue is a
+        // shout about a tile nobody can see yet.
+        const h = (typeof pendingHeadline !== 'undefined') ? pendingHeadline : null;
+        S.events.push({t: now(), what: 'headline',
+                       text: h && h.shout ? h.shout.text : null,
+                       seat: h && h.shout ? h.shout.seat : null,
+                       queued: document.querySelectorAll('.pond-grid .tile.queued').length,
+                       queuedPerSeat: queuedPerSeat()});
+      }
+      const r = orig.apply(this, arguments);
+      S.marks[name] = (S.marks[name] || 0) + 1;
+      return r;
+    };
+  };
+  ['revealDiscard', 'revealMeld', 'showHeadline'].forEach(wrapStep);
+
+  // Every plan, so a failure can be diagnosed instead of guessed at: how many
+  // events the server sent, how many tiles were waiting, and whether two discards
+  // were put on the same beat (which is what "revealed at once" looks like).
+  const origPlan = window.planBatch;
+  if (typeof origPlan === 'function') {
+    window.planBatch = function (batch, pending) {
+      const r = origPlan.apply(this, arguments);
+      const at = {};
+      r.plan.forEach(s => { if (s.what === 'discard') at[s.at] = (at[s.at] || 0) + 1; });
+      const collide = Object.values(at).filter(n => n > 1).length;
+      S.plans.push({t: now(), events: (batch || []).length, pending: (pending || []).length,
+                    steps: r.plan.length, collide,
+                    kinds: r.plan.map(s => s.what).join(' '),
+                    sent: (batch || []).filter(e => e.Discard)
+                            .map(e => e.Discard.seat + ':' + e.Discard.tile),
+                    waiting: (pending || []).map(p => p.seat + ':' + p.tile),
+                    ats: r.plan.filter(s => s.what === 'discard').map(s => s.at),
+                    lead: r.plan.length ? r.plan[0].at : null});
+      if (S.plans.length > 400) S.plans.shift();
+      return r;
+    };
+  }
+
+  // The overlay opening is the moment the panel covers the table.
+  const overlay = document.getElementById('overlay');
+  new MutationObserver(() => {
+    const open = !overlay.classList.contains('hidden');
+    if (open) S.events.push({t: now(), what: 'panel',
+                             title: document.getElementById('overlay-title').textContent});
+  }).observe(overlay, {attributes: true, attributeFilter: ['class']});
+
+  // The banner is the shout; it is shown by an inline style-free class change.
+  const banner = document.getElementById('banner');
+  new MutationObserver(() => {
+    if (!banner.classList.contains('hidden')) {
+      S.events.push({t: now(), what: 'banner', text: banner.textContent});
+    }
+  }).observe(banner, {attributes: true, attributeFilter: ['class']});
+
+  // Sampling inside the page: is the player's own drawn tile on screen while a
+  // pond tile is still waiting its turn?
+  S.timer = setInterval(() => {
+    const drawn = !!document.querySelector('#hand .tile.drawn');
+    const queued = document.querySelectorAll('.pond-grid .tile.queued').length;
+    if (drawn && queued) {
+      S.violations.push({t: now(), drawn, queued,
+        hand: document.querySelectorAll('#hand .tile').length,
+        bar: document.getElementById('action-bar').textContent});
+    }
+  }, 20);
+  return 'hooked';
+})()"""
+
+
+def stage_failures(log, pace_ms, allow_gap):
+    """Read the page's own log back and judge the staging.
+
+    `log` is the list of {t, what, ...} the probes recorded. Returns a list of
+    human-readable failures, plus a short summary line for the report.
+    """
+    bad = []
+    events = sorted(log.get("events", []), key=lambda e: e["t"])
+    reveals = [e for e in events if e["what"] == "discard"]
+    if len(reveals) < 4:
+        bad.append(f"only {len(reveals)} discards were staged in this run")
+    gaps = [b["t"] - a["t"] for a, b in zip(reveals, reveals[1:])]
+    if gaps:
+        too_fast = [g for g in gaps if g < allow_gap]
+        if too_fast:
+            bad.append(f"discards landed {min(gaps)} ms apart (at least {allow_gap} wanted): "
+                       "the table is playing at machine speed")
+    for v in log.get("violations", [])[:3]:
+        bad.append(f"the drawn tile was on screen while {v['queued']} discards were still "
+                   f"queued (hand={v['hand']} bar={v['bar']!r})")
+    # A shout must not name a tile the player cannot see yet. Two cases:
+    #   * a win or a draw ends the hand, so *nothing* may still be queued — the
+    #     tile that won it has to be in the pond;
+    #   * a 立直 rides on the declarer's own discard, so that player's pond has to
+    #     be complete (the sideways tile is the whole announcement).
+    ending = ("荣和", "自摸", "双响", "三响", "流局满贯", "流局", "途中流局")
+    shouted = 0
+    for e in events:
+        if e["what"] != "headline" or e.get("text") is None:
+            continue
+        shouted += 1
+        if e["text"] in ending:
+            if e.get("queued"):
+                bad.append(f"{e['text']} was shouted with {e['queued']} discards still "
+                           f"queued: the tile it is about is not on the table yet")
+        elif e["text"] == "立直":
+            # 「リーチ」 is said *before* the tile goes down (that is the order at a
+            # table, and what 電脳麻将's replay does), so the declarer's own
+            # discard may still be one beat away — but no more than that, and no
+            # other seat may still be owed a discard from before the shout.
+            seat = e.get("seat")
+            per = e.get("queuedPerSeat") or []
+            if seat is not None and 0 <= seat < len(per) and per[seat] > 1:
+                bad.append(f"立直 was shouted with {per[seat]} of seat {seat}'s own "
+                           f"discards still queued, so the shout is not about the tile "
+                           f"being placed")
+
+    # And a settlement panel is the last thing of all: it covers the table, so by
+    # then the hand has to be complete on screen.
+    panels = [e for e in events if e["what"] == "panel"]
+    for p in panels:
+        if not [r for r in reveals if r["t"] <= p["t"]]:
+            bad.append("a settlement panel opened before any discard had been staged")
+    summary = (f"{len(reveals)} discards staged, gaps={gaps[:8]}, "
+               f"shouts={shouted}, panels={len(panels)}, "
+               f"drawn-early={len(log.get('violations', []))}")
+    return bad, summary
+
+
+async def check_stage():
+    """A batch must be *played*, not rendered.
+
+    Three things are asserted, all of them things the player could see going
+    wrong: every discard gets its own beat (at least most of the pace setting
+    apart), the player's own drawn tile stays off screen until the batch is
+    finished, and a shout or a settlement panel never precedes the tile that
+    caused it.
+    """
+    failures = []
+    async with Browser("1280,800") as b:
+        # The pace is the subject, so it is set rather than inherited: the check
+        # browsers share a profile directory per port, and a previous run (or the
+        # `pace` check) leaves its own choice in localStorage.
+        await b.ev("document.getElementById('sel-pace').value = '2';"
+                   "document.getElementById('sel-pace').dispatchEvent(new Event('change'))")
+        if await b.ev(STAGE_HOOKS) is None:
+            return ["the page did not accept the staging probes"]
+        pace_ms = int(await b.ev("pace()"))
+        print(f"  pace step: {pace_ms} ms")
+        # Play until a hand has actually ended and its panel has been seen: the
+        # panel is the case the player complained about (the shout and the panel
+        # arriving before the tile that won the hand was on the table), and the
+        # human takes a tsumo/ron whenever one is offered.
+        played = 0
+        for _ in range(3000):
+            what = await b.ev(SETTLE_STEP)
+            if what == "new-game":
+                played += 1
+            if played >= 1:
+                got = json.loads(await b.ev(
+                    "JSON.stringify({panels: window.__stage.events.filter(e => e.what === 'panel').length,"
+                    " headline: window.__stage.marks.showHeadline || 0})"))
+                if got["panels"] >= 1 and got["headline"] >= 2:
+                    break
+            await asyncio.sleep(0.03)
+        log = json.loads(await b.ev(
+            "JSON.stringify({events: window.__stage.events.slice(-400),"
+            " violations: window.__stage.violations, marks: window.__stage.marks,"
+            " plans: window.__stage.plans.slice(-60),"
+            " panels_seen: window.__stage.events.filter(e => e.what === 'panel').length})"))
+        for p in log.get("plans", []):
+            if p.get("collide"):
+                print(f"  plan with two discards on one beat: {p}")
+        reveals = sorted([e for e in log.get("events", []) if e["what"] == "discard"],
+                         key=lambda e: e["t"])
+        short = [(x, y) for x, y in zip(reveals, reveals[1:])
+                 if y["t"] - x["t"] < int(pace_ms * 0.75)]
+        for x, y in short[:2]:
+            print(f"  short gap: reveal at {x['t']} then {y['t']}")
+            for p in log.get("plans", [])[-6:]:
+                print(f"    plan t={p['t']} lead={p.get('lead')} ats={p.get('ats')} "
+                      f"events={p['events']} pending={p['pending']}")
+        bad, summary = stage_failures(log, pace_ms, int(pace_ms * 0.75))
+        print(f"  {summary}")
+        failures.extend(bad)
+        # The probes must have seen something, or they are not testing anything.
+        marks = log.get("marks") or {}
+        if not marks.get("revealDiscard"):
+            failures.append("the staging probes never saw a discard being revealed")
+        if not marks.get("showHeadline") or not log.get("panels_seen"):
+            failures.append("no hand ended in this run, so the shout/panel ordering "
+                            "was not tested — raise the budget or check the server")
         if b.problems:
             failures.append(f"{len(b.problems)} page exceptions (first: {b.problems[0]})")
         if b.console:
@@ -1729,9 +2010,11 @@ async def main():
         failures = await check_pace()
     elif mode == "meld":
         failures = await check_meld()
+    elif mode == "stage":
+        failures = await check_stage()
     else:
         sys.exit(f"unknown mode {mode!r}; use fit, play, riichi, panels, settle, protocol, "
-                 f"multi, seats, match, tiles, paint, pace or meld")
+                 f"multi, seats, match, tiles, paint, pace, meld or stage")
     if failures:
         print("\nFAILED:")
         for f in failures:
