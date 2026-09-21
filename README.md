@@ -65,6 +65,7 @@ cargo build --release          # 首次约 2-3 分钟
 .venv/bin/python scripts/ui_check.py settle   # 每一小局结束都有结算，且内容完整（分钟级）
 .venv/bin/python scripts/ui_check.py multi    # 大字提示，以及双响的逐家结算
 .venv/bin/python scripts/ui_check.py tiles    # 三十四种牌面逐一渲染检查（映射/配色/空白白板）
+.venv/bin/python scripts/ui_check.py paint    # 页面上每张牌都必须真的画出图案（含断网兜底）
 ```
 
 七个模式都是"布局/规则/交互回归测试"，改完 UI 或规则之后应该像改完引擎之后跑 Rust 测试那样跑它们。

@@ -287,6 +287,23 @@ function backRow(count, opts = {}) {
 let lastRequest = null;
 let reconnectTimer = null;
 
+/// Warm the browser's cache with every tile face at boot.
+///
+/// Without this the first hand renders with blank bodies for a frame or two: the
+/// face probes resolve asynchronously and a tile shows its plain body until they
+/// do. The whole set is a few hundred KB of vector art and it is cached, so the
+/// cost is paid once, before the first hand is dealt.
+function preloadTileArt() {
+  const names = new Set();
+  for (let k = 0; k < 34; k++) names.add(tileFile(k * 4));
+  // The red fives have their own files.
+  for (const k of [4, 13, 22]) names.add(tileFile(k * 4 + 0).replace(/^(Man|Pin|Sou)5$/, "$15-Dora"));
+  for (const name of names) {
+    const img = new Image();
+    img.src = "/tiles/" + name + ".svg?v=" + TILE_REVISION;
+  }
+}
+
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   socket = new WebSocket(`${proto}://${location.host}/ws`);
@@ -1635,5 +1652,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
+  preloadTileArt();
   connect();
 });

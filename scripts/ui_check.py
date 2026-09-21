@@ -19,6 +19,7 @@ Two modes:
     python3 scripts/ui_check.py seats    # every seat, and a whole half game
     python3 scripts/ui_check.py match    # how a match ends, and reconnect resume
     python3 scripts/ui_check.py tiles    # every tile kind maps to artwork that paints
+    python3 scripts/ui_check.py paint    # every tile on screen actually paints
 
 `fit` is the regression check for layout; `play` is the end-to-end check for
 rounds, wins, draws, calls and the final overlay; `riichi` is the rules check
@@ -1136,6 +1137,91 @@ async def check_tiles():
         return failures
 
 
+# --- paint sweep ------------------------------------------------------------
+
+PAINT_SWEEP = r"""
+(() => {
+  const tiles = [...document.querySelectorAll('.tile')];
+  const bad = {noFace: [], noBg: [], zeroBox: [], offscreen: []};
+  for (const t of tiles) {
+    const k = t.dataset.kind;
+    const f = t.querySelector('.tile-face');
+    const r = t.getBoundingClientRect();
+    if (!f && !t.classList.contains('no-asset')) { bad.noFace.push(k); continue; }
+    if (f && !getComputedStyle(f).backgroundImage.includes('/tiles/') && k !== '31') bad.noBg.push(k);
+    if (r.width < 4 || r.height < 4) bad.zeroBox.push(k + ':' + Math.round(r.width) + 'x' + Math.round(r.height));
+    if (r.right < 0 || r.bottom < 0 || r.left > innerWidth || r.top > innerHeight) bad.offscreen.push(k);
+  }
+  return JSON.stringify({total: tiles.length,
+    noFace: bad.noFace.length, noBg: bad.noBg.length,
+    zeroBox: bad.zeroBox.length, offscreen: bad.offscreen.length,
+    samples: [...bad.noBg, ...bad.zeroBox, ...bad.noFace].slice(0, 6)});
+})()"""
+
+
+async def check_paint():
+    """Every tile on screen must actually paint.
+
+    Counting elements is not enough: the settlement panel once showed fourteen
+    `.tile` elements at the right size with no ink in any of them. This sweeps
+    the whole document, on the table and inside any open panel.
+    """
+    failures = []
+    async with Browser("1280,800") as b:
+        await b.new_game("tonpuu")
+        # Give the faces a moment: they are probes, so a brand-new hand paints a
+        # frame or two late. A gap that survives a second is a bug.
+        for label, settle in (("table", 1.0),):
+            await asyncio.sleep(settle)
+            st = json.loads(await b.ev(PAINT_SWEEP))
+            print(f"  {label}: {st}")
+            for key in ("noFace", "noBg", "zeroBox", "offscreen"):
+                if st[key]:
+                    failures.append(f"{label}: {st[key]} tiles with {key} {st['samples']}")
+        # And inside a settlement panel.
+        for _ in range(400):
+            if await b.ev("!document.getElementById('overlay').classList.contains('hidden')"):
+                await asyncio.sleep(0.5)
+                st = json.loads(await b.ev(PAINT_SWEEP))
+                print(f"  panel: {st}")
+                for key in ("noFace", "noBg", "zeroBox"):
+                    if st[key]:
+                        failures.append(f"panel: {st[key]} tiles with {key} {st['samples']}")
+                break
+            await b.ev(SETTLE_STEP)
+            await asyncio.sleep(0.05)
+        else:
+            print("  note: no panel appeared in this run")
+
+        # With the artwork unreachable, every tile must still be readable: a
+        # player should see a text face, not an empty box or a broken-image
+        # glyph. This is how the undefined NUMERAL in that path was found.
+        await b.ev("document.getElementById('overlay').classList.add('hidden')")
+        await b.call("Network.enable")
+        await b.call("Network.setBlockedURLs", {"urls": ["*/tiles/*"]})
+        await b.new_game("tonpuu")
+        await asyncio.sleep(2.5)
+        fallback = json.loads(await b.ev("""JSON.stringify((() => {
+            const tiles = [...document.querySelectorAll('#hand .tile')];
+            return {hand: tiles.length,
+                    withText: tiles.filter(t => t.textContent.trim().length > 0).length,
+                    facesLeft: tiles.filter(t => t.querySelector('.tile-face')).length,
+                    samples: tiles.slice(0, 4).map(t => t.textContent.trim())};
+        })())"""))
+        print(f"  without artwork: {fallback}")
+        await b.call("Network.setBlockedURLs", {"urls": []})
+        if fallback["hand"] and fallback["withText"] < fallback["hand"]:
+            failures.append(
+                f"with no artwork, {fallback['hand'] - fallback['withText']} tiles show nothing")
+        if fallback["facesLeft"]:
+            failures.append("a failed face element was left in the DOM")
+        if b.problems:
+            failures.append(f"{len(b.problems)} page exceptions (first: {b.problems[0]})")
+        if b.console:
+            failures.append(f"{len(b.console)} console errors (first: {b.console[0]})")
+        return failures
+
+
 async def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "fit"
     if mode == "fit":
@@ -1158,8 +1244,10 @@ async def main():
         failures = await check_match()
     elif mode == "tiles":
         failures = await check_tiles()
+    elif mode == "paint":
+        failures = await check_paint()
     else:
-        sys.exit(f"unknown mode {mode!r}; use fit, play, riichi, panels, settle, protocol, multi, seats, match or tiles")
+        sys.exit(f"unknown mode {mode!r}; use fit, play, riichi, panels, settle, protocol, multi, seats, match, tiles or paint")
     if failures:
         print("\nFAILED:")
         for f in failures:
