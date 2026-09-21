@@ -172,12 +172,11 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
   background-repeat: no-repeat;
   filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.4));
 }
-.tile .tile-img {
+.tile-face {
   position: absolute;
   inset: 0;
-  width: 100%;
-  height: 100%;
-  display: block;
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
   pointer-events: none;
 }
 .tile.small { --w: 27px; --h: 36px; }
@@ -427,11 +426,11 @@ button:focus-visible, .tile:focus-visible, a.navlink:focus-visible, select:focus
    rule, so it did nothing.) */
 .tile.aka { box-shadow: inset 0 0 0 1px rgba(255, 209, 102, 0.55); }
 
-/* 白 is a blank tile by rule, but a completely empty face reads as a broken
-   image next to the others. A faint inner frame says "deliberately blank"
-   without inventing a marking. Delete this rule for the strictest look. */
-.tile.haku::after {
-  content: ""; position: absolute; inset: 14% 12%; border-radius: 2px;
-  border: 1px solid rgba(60, 55, 45, 0.35);
-  pointer-events: none;
-}
+/* Announcements sit at the seat they are about, so the player does not have to
+   work out who declared. `--banner-x/--banner-y` place the block; the text stays
+   centred on its own box. */
+#banner.at-across { top: 12%; }
+#banner.at-left   { top: 40%; left: 2%; right: auto; align-items: flex-start; padding-left: 12px; }
+#banner.at-right  { top: 40%; left: auto; right: 2%; align-items: flex-end; padding-right: 12px; }
+#banner.at-self   { top: auto; bottom: 18%; }
+#banner.at-left .banner-text, #banner.at-right .banner-text { font-size: 64px; }

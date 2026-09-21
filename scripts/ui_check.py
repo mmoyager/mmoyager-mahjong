@@ -702,6 +702,16 @@ async def check_settle():
                         failures.append(f"win settlement has no score table: {after['text']}")
                     if after["tiles"] == 0:
                         failures.append(f"win settlement shows no hand ({title}): {after['text']}")
+                    painted = json.loads(await b.ev("""JSON.stringify((() => {
+                        const ts = [...document.querySelectorAll('#overlay-body .tile')];
+                        return {n: ts.length, painted: ts.filter(t => {
+                            const f = t.querySelector('.tile-face');
+                            return f && getComputedStyle(f).backgroundImage.includes('/tiles/');
+                        }).length};
+                    })())"""))
+                    if painted["painted"] < painted["n"]:
+                        failures.append(
+                            f"settlement hand tiles do not paint ({painted['painted']}/{painted['n']})")
                 step = str(await b.ev(SETTLE_STEP))   # dismiss the panel
                 pending = None
                 await asyncio.sleep(0.05)
@@ -851,12 +861,19 @@ async def check_multi():
         await b.ev(DOUBLE_RON)
         banners, panels = [], []
         first_sight = None
+        first_banner_class = None
         expect_new = True
         t0 = time.time()
         while time.time() - t0 < 8:
             st = json.loads(await b.ev(ANNOUNCE_STATUS))
             if st["banner"] and st["banner"] not in banners:
                 banners.append(st["banner"])
+                # Position matters for the announcement under test (the double
+                # ron), not for whatever the live game announced first; and it
+                # has to be read while that announcement is the current one.
+                if "双响" in st["banner"] and first_banner_class is None:
+                    first_banner_class = await b.ev(
+                        "document.getElementById('banner').className")
             if first_sight is None and (st["bannerVisible"] or st["panel"]):
                 first_sight = {"banner": st["bannerVisible"], "panel": st["panel"]}
             if st["panel"]:
@@ -875,6 +892,13 @@ async def check_multi():
                 continue
             await asyncio.sleep(0.06)
         print(f"  announcements: {banners}")
+        # The banner must sit at the seat it is about: a centre banner leaves the
+        # player working out who declared. The injected winner is seat 1, which
+        # is to the observer's right.
+        print(f"  banner position: {first_banner_class!r}")
+        if not first_banner_class or "at-right" not in first_banner_class:
+            failures.append(
+                f"a right-hand player's banner is not at its seat: {first_banner_class!r}")
         for i, p in enumerate(panels):
             print(f"  panel {i + 1}: {p['title']} first-seat={p['seat']} tiles={p['tiles']}")
         if not any("双响" in x for x in banners):

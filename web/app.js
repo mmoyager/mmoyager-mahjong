@@ -191,34 +191,40 @@ function tileEl(tile, opts = {}) {
     + (opts.extra ? " " + opts.extra : "");
   el.dataset.kind = String(k);
 
-  const img = document.createElement("img");
-  img.className = "tile-img";
-  img.alt = tileName(tile);
-  img.draggable = false;
-  // Keep the face hidden until it has decoded. A request that fails (a blip, a
-  // stale cache entry) otherwise paints the browser's broken-image glyph — a
-  // question mark in some browsers — on top of the tile body, which reads as
-  // "this tile is broken" when the artwork is fine.
-  img.style.visibility = "hidden";
+  // The face is a *background* image, not an <img>.
+  //
+  // Two reasons, both learned the hard way. A background never paints the
+  // browser's broken-image glyph (a "?" in some browsers) when a request fails,
+  // and there is no "hide it until it loads" race to lose — an earlier attempt
+  // at hiding an <img> until its load event left the tiles in the settlement
+  // panel permanently invisible, because the event had already fired before the
+  // listener was attached.
+  const face = document.createElement("div");
+  face.className = "tile-face";
   const url = "/tiles/" + tileFile(tile) + ".svg?v=" + TILE_REVISION;
+
+  // Probe the artwork with a detached image: the tile shows its plain body
+  // until the probe succeeds, so nothing half-drawn is ever visible.
+  const probe = new Image();
   let retried = false;
-  img.addEventListener("load", () => { img.style.visibility = ""; });
-  img.addEventListener("error", () => {
+  probe.addEventListener("load", () => {
+    face.style.backgroundImage = 'url("' + url + '")';
+  });
+  probe.addEventListener("error", () => {
     if (!retried) {
-      // One retry past the cache: a stale or half-written cache entry recovers,
-      // and nothing is shown while it happens.
+      // One retry past any cache: a stale entry recovers, and the tile keeps
+      // showing its body while that happens.
       retried = true;
-      img.src = url + "&r=" + Date.now();
+      probe.src = url + "&r=" + Date.now();
       return;
     }
-    // Still nothing: keep the table readable with a text face rather than a
-    // blank or broken tile.
+    // Still nothing: a text face keeps the table readable.
     el.classList.add("no-asset");
-    img.remove();
+    face.remove();
     el.appendChild(textFace(k));
   });
-  img.src = url;
-  el.appendChild(img);
+  probe.src = url;
+  el.appendChild(face);
 
   if (opts.onClick && !opts.disabled) {
     el.addEventListener("click", opts.onClick);
@@ -810,7 +816,8 @@ function absorbEvents(events) {
     const riichi = events.filter((e) => e.Riichi);
     if (riichi.length) {
       const who1 = riichi.map((e) => botNames[e.Riichi.seat] || "对手").join("、");
-      announce("立直", who1);
+      // The seat of the (first) declarer is where the banner belongs.
+      announce("立直", who1, undefined, riichi[0].Riichi.seat);
     }
     return;
   }
@@ -828,19 +835,25 @@ function absorbEvents(events) {
     // at the table, and it is the order every ruleset describes.
     const from = wins[0].from;
     const order = (w) => (from === null || from === undefined ? w.seat : (w.seat - from + 4) % 4);
-    wins.slice().sort((a, b) => order(a) - order(b)).forEach((w) => queue.push({ kind: "win", data: w }));
+    // Keep the sorted result: `.sort()` on a copy left `wins[0]` as whatever the
+    // engine happened to list first, which put the announcement on the wrong
+    // seat (the panels were ordered correctly, the banner was not).
+    const settled = wins.slice().sort((a, b) => order(a) - order(b));
+    settled.forEach((w) => queue.push({ kind: "win", data: w }));
     if (wins.length > 1) {
       // Two ron is the common case; three is normally aborted by the engine as
       // 三家和了, so the third panel only appears if the rules allow it.
       announceMs = 1400;
-      announce(wins.length === 2 ? "双响" : "三响", wins.map((w) => botNames[w.seat]).join("、"), announceMs);
+      announce(wins.length === 2 ? "双响" : "三响", settled.map((w) => botNames[w.seat]).join("、"),
+               announceMs, settled[0].seat);
     } else {
       const w = wins[0];
       const ron = w.from !== null && w.from !== undefined;
       if (w.nagashi) {
-        announce("流局满贯", botNames[w.seat] || "");
+        announce("流局满贯", botNames[w.seat] || "", undefined, w.seat);
       } else {
-        announce(ron ? "荣和" : "自摸", `${botNames[w.seat] || ""} ${friendlyTileName(w.tile)}`);
+        announce(ron ? "荣和" : "自摸", `${botNames[w.seat] || ""} ${friendlyTileName(w.tile)}`,
+                 undefined, w.seat);
       }
     }
   } else if (draw) {
@@ -1044,7 +1057,7 @@ function showWin(w) {
   body.appendChild(paid);
   body.appendChild(tableNode(scoreTable(w.deltas, true)));
 
-  overlay(title, body.innerHTML);
+  overlay(title, body);
 }
 
 /// One plain sentence per draw reason. A 途中流局 ends the hand before the wall
@@ -1122,7 +1135,7 @@ function showRyuukyoku(r) {
       : "全員不听：不支付罚符";
     body.appendChild(note);
   }
-  overlay("流局", body.innerHTML);
+  overlay("流局", body);
 }
 
 /// Wrap an HTML string (the settlement table) as a node, so it can be appended
@@ -1185,11 +1198,22 @@ function showNextPanel() {
 
 /// A short, loud announcement in the middle of the table: 立直, 自摸, 荣和,
 /// 流局. It never blocks a click and it clears itself.
-function announce(text, sub, ms) {
+/// How a seat sits relative to the observer: 0 self, 1 right, 2 across, 3 left.
+function relativeSeat(seat) {
+  return (seat - (state && state.human !== undefined ? state.human : 0) + 4) % 4;
+}
+
+/// An announcement, shown **at the seat it is about** rather than in the middle
+/// of the table: a 立直 banner in the centre still leaves the player hunting for
+/// who declared. `seat` positions it; without one it goes to the centre.
+function announce(text, sub, ms, seat) {
   const el = document.getElementById("banner");
   if (!el) return;
   el.innerHTML = `<span class="banner-text">${esc(text)}</span>`
     + (sub ? `<span class="banner-sub">${esc(sub)}</span>` : "");
+  el.classList.remove("at-self", "at-right", "at-across", "at-left");
+  el.classList.add(["at-self", "at-right", "at-across", "at-left"][relativeSeat(
+    seat === null || seat === undefined ? (state && state.human) || 0 : seat)]);
   el.classList.remove("hidden");
   // restart the animation so two announcements in a row both animate
   el.classList.remove("pop");
@@ -1216,9 +1240,18 @@ function applyPendingState() {
 
 /// Show a plain dialog. `transient` dialogs (the shortcut help) are not part of
 /// the settlement queue, so closing one must not consume a queued panel.
-function overlay(title, bodyHtml, dismiss, transient) {
+/// Show a dialog. `body` is either HTML text or a DOM node.
+///
+/// It must accept a node: a settlement panel is built as DOM because it contains
+/// tiles, and pushing it through `innerHTML` re-parses it into *new* elements —
+/// the tile faces, whose images are still loading, then attach to the discarded
+/// originals and the panel shows blank tiles.
+function overlay(title, body, dismiss, transient) {
+  const host = document.getElementById("overlay-body");
   document.getElementById("overlay-title").textContent = title;
-  document.getElementById("overlay-body").innerHTML = bodyHtml;
+  host.innerHTML = "";
+  if (typeof body === "string") host.innerHTML = body;
+  else if (body) host.appendChild(body);
   document.getElementById("overlay-close").textContent = dismiss || "继续";
   overlayIsTransient = !!transient;
   overlayIsSettlement = !transient;
