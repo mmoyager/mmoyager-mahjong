@@ -432,5 +432,36 @@ button:focus-visible, .tile:focus-visible, a.navlink:focus-visible, select:focus
 #banner.at-across { top: 12%; }
 #banner.at-left   { top: 40%; left: 2%; right: auto; align-items: flex-start; padding-left: 12px; }
 #banner.at-right  { top: 40%; left: auto; right: 2%; align-items: flex-end; padding-right: 12px; }
-#banner.at-self   { top: auto; bottom: 18%; }
+/* Above the action bar and the hand: an announcement for your own 立直 fires
+   while your buttons are still live, and must not bury them. */
+#banner.at-self   { top: auto; bottom: calc(18% + 96px); }
 #banner.at-left .banner-text, #banner.at-right .banner-text { font-size: 64px; }
+
+/* ---------- connection state ---------- */
+#conn-chip {
+  background: #4a1414; border: 1px solid #a33; color: #ffd9d9;
+  border-radius: 999px; padding: 1px 10px; font-size: 12px;
+}
+/* While the socket is down nothing can be played: make that visible instead of
+   leaving a hand that looks clickable but does nothing. */
+body.offline #hand .tile.clickable { cursor: not-allowed; filter: grayscale(0.55) brightness(0.8); }
+body.offline #action-bar button { opacity: 0.5; }
+
+/* Toasts carry errors and connection news; they must not be dimmed by a modal
+   panel that happens to be open (they sit under it otherwise). */
+#toast { z-index: 60; }
+
+/* Tile backs: a plain green back as the base, so an unreachable Back.svg leaves
+   readable tiles face-down rather than an empty seat. */
+.back {
+  background-color: #2f6b4f;
+  border: 1px solid #1c4634;
+  border-radius: 2px;
+}
+
+/* The hint panel is advice; panels and toasts are news. Keep it above the table
+   but below a settlement — and hide it when a hand ends (see absorbEvents). */
+#hint-box { z-index: 20; }
+
+/* Monospaced bits in the hint panel (checkpoint name, probabilities). */
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }

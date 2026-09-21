@@ -16,6 +16,9 @@
       <span id="honba">0 本场</span>
       <span id="sticks">供托 0</span>
       <span id="wall">余 0</span>
+      <!-- Shown while the WebSocket is down: without it, every control silently
+           does nothing and the page looks broken rather than disconnected. -->
+      <span id="conn-chip" class="hidden">未连接</span>
     </div>
     <div class="controls">
       <label>场次
@@ -151,5 +154,26 @@
   </div>
 </div>
 <script src="/app.js"></script>
+<script>
+// If app.js itself fails to load, the static skeleton above leaves a green table
+// whose buttons do nothing and which says nothing about it. Say so.
+window.setTimeout(function () {
+  if (!window.__mmjBooted) {
+    var box = document.getElementById("conn-chip");
+    if (box) {
+      box.className = "";
+      box.textContent = "脚本未能加载";
+    }
+    var table = document.getElementById("table");
+    if (table) {
+      var note = document.createElement("p");
+      note.style.cssText = "padding:16px;color:#ffd166;font-size:14px";
+      note.textContent = "前端脚本 /app.js 没有加载成功：请重新载入页面（Cmd-R）；"
+        + "如果反复如此，检查服务是否在运行、以及浏览器控制台里的报错。";
+      table.appendChild(note);
+    }
+  }
+}, 2500);
+</script>
 </body>
 </html>

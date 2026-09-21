@@ -130,6 +130,8 @@ table.hist td.note { white-space: normal; color: var(--muted); max-width: 380px;
 .pill.ok { background: rgba(87,214,138,0.16); color: var(--good); }
 .pill.no { background: rgba(255,255,255,0.07); color: var(--muted); }
 .pill.early { background: rgba(255,196,107,0.14); color: var(--warn); }
+/* Rows that were never evaluated: not a rejection, just no measurement. */
+.pill.wait { background: rgba(255,255,255,0.05); color: var(--muted); font-style: italic; }
 
 /* ---------------- log ---------------- */
 .log {

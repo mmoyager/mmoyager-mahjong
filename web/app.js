@@ -183,7 +183,6 @@ function tileEl(tile, opts = {}) {
   const aka = isAka(tile);
   const el = document.createElement("div");
   el.className = "tile"
-    + (tileFile(tile) === "Haku" ? " haku" : "")
     + (opts.small ? " small" : "")
     + (opts.clickable ? " clickable" : "")
     + (opts.disabled ? " disabled" : "")
@@ -274,7 +273,7 @@ function backRow(count, opts = {}) {
     const b = document.createElement("div");
     // The back face is painted by CSS on .back itself. A child <img> would lay
     // out at the SVG's intrinsic 300x400 size and drag the page width open.
-    b.className = "back" + (opts.small ? " small" : "");
+    b.className = "back";
     wrap.appendChild(b);
   }
   return wrap;
@@ -313,6 +312,7 @@ function connect() {
     handle(msg);
   };
   socket.onopen = () => {
+    setConnected(true);
     // The server hands every new socket a *new* game; re-ask for the one the
     // player was in. The seed is what makes it the same match rather than a
     // fresh one, so it is sent back with the request.
@@ -321,6 +321,7 @@ function connect() {
     }
   };
   socket.onclose = () => {
+    setConnected(false);
     toast("与服务端的连接断开，正在重连…");
     if (reconnectTimer) clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, 1500);
@@ -336,8 +337,25 @@ function friendlyError(message) {
   return "操作无效：" + m;
 }
 
+/// True while the socket is open. A dropped action is otherwise completely
+/// silent: the player clicks, nothing happens, and nothing says why.
+let connected = false;
+
 function send(obj) {
-  if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(obj));
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify(obj));
+    return true;
+  }
+  toast("和服务器断开了连接，正在重连…");
+  return false;
+}
+
+/// Show or hide the "not connected" chip and stop the hand from looking playable.
+function setConnected(up) {
+  connected = up;
+  const chip = document.getElementById("conn-chip");
+  if (chip) chip.classList.toggle("hidden", up);
+  document.body.classList.toggle("offline", !up);
 }
 
 function handle(msg) {
@@ -856,7 +874,7 @@ function absorbEvents(events) {
 
   // A hand ended. Hold the board on the finished hand until the last panel has
   // been read, then let the next round's state through.
-  boardHold = true;
+  holdBoard();
   const queue = [];
   // The announcement comes first and the settlement follows it: a big 自摸 in
   // the middle of the table, then the panel with the hand and the yaku. Showing
@@ -896,10 +914,17 @@ function absorbEvents(events) {
     announce(dd.reason === "Exhaustive" ? "流局" : "途中流局", sub, announceMs);
   }
   clearTimeout(settleTimer);
-  settleTimer = setTimeout(() => enqueueSettlements(queue), announceMs);
+  pendingSettlement = queue;
+  settleTimer = setTimeout(() => {
+    pendingSettlement = [];
+    enqueueSettlements(queue);
+  }, announceMs);
 }
 
 let settleTimer = null;
+/// Settlements waiting for their announcement to finish. Kept so a match ending
+/// in that window cannot swallow them.
+let pendingSettlement = [];
 
 // ------------------------------------------------------- settlement queue
 
@@ -1198,12 +1223,17 @@ function scoreTable(deltas, withTotals) {
 }
 
 function showGameEnd(msg) {
-  // The match is over, but the hand that decided it still has to be settled:
-  // the server sends events → game_end → state back to back, so clearing the
-  // queue here threw the final 報番 panel away before it was ever shown. Queue
-  // the match result instead, behind whatever hand is still being read.
+  // The match is over, but the hand that decided it still has to be settled.
+  // The server sends events → game_end → state back to back, so the settlement
+  // of that last hand is usually still waiting on its announcement timer: cancel
+  // the timer and the 報番 panel is lost for good. Flush it into the queue
+  // instead, then put the result behind it.
+  if (pendingSettlement.length) {
+    panelQueue = panelQueue.concat(pendingSettlement);
+    pendingSettlement = [];
+  }
   clearTimeout(settleTimer);
-  boardHold = true;
+  holdBoard();
   const rows = msg.ranking.map((seat, place) =>
     `<tr><td>${place + 1} 位</td><td>${who(seat)}</td><td>${msg.scores[seat]}</td></tr>`).join("");
   let body = `<p>共 ${msg.rounds} 局</p>`;
@@ -1256,6 +1286,20 @@ function announce(text, sub, ms, seat) {
 }
 
 let bannerTimer = null;
+
+/// Hold the board on the hand just finished: stop showing live controls and put
+/// the hint away.
+///
+/// The render that would normally clear the action bar is deferred (the new
+/// state is parked in `pendingState`), so the buttons would otherwise stay on
+/// screen and clicking one would send an action the table has already left.
+function holdBoard() {
+  boardHold = true;
+  const bar = document.getElementById("action-bar");
+  if (bar) bar.innerHTML = "";
+  const hintBox = document.getElementById("hint-box");
+  if (hintBox) hintBox.classList.add("hidden");
+}
 
 function settlementOpen() {
   const o = document.getElementById("overlay");
@@ -1669,4 +1713,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   preloadTileArt();
   connect();
+  // Read by the inline guard in index.html: the table is only usable once this
+  // script has actually booted.
+  window.__mmjBooted = true;
 });

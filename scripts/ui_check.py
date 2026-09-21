@@ -556,6 +556,35 @@ async def check_panels():
             if an["body"] < 50:
                 failures.append("the replay analysis panel is empty")
 
+        # Bad news must not be hidden: a dropped socket has to be visible, and a
+        # toast has to be painted above any panel that happens to be open.
+        conn = json.loads(await b.ev("""JSON.stringify((() => {
+            document.getElementById('replay-overlay').classList.add('hidden');
+            const chip = document.getElementById('conn-chip');
+            const before = {exists: !!chip, hidden: chip && chip.classList.contains('hidden')};
+            setConnected(false);
+            const down = {hidden: chip.classList.contains('hidden'),
+                          text: chip.textContent,
+                          offline: document.body.classList.contains('offline')};
+            setConnected(true);
+            toast('检查提示层');
+            return {before, down};
+        })())"""))
+        z = json.loads(await b.ev("""JSON.stringify((() => {
+            overlay('检查面板', '<p>x</p>', '关闭', true);
+            const zs = {toast: +getComputedStyle(document.getElementById('toast')).zIndex,
+                        overlay: +getComputedStyle(document.getElementById('overlay')).zIndex};
+            document.getElementById('overlay').classList.add('hidden');
+            return zs;
+        })())"""))
+        print(f"  offline chip: {conn['before']} -> {conn['down']}; z-index {z}")
+        if not conn["before"]["exists"] or not conn["before"]["hidden"]:
+            failures.append(f"no hidden connection chip: {conn['before']}")
+        if conn["down"]["hidden"] or not conn["down"]["offline"]:
+            failures.append(f"a dropped socket is not shown: {conn['down']}")
+        if z["toast"] <= z["overlay"]:
+            failures.append(f"toasts are painted under panels: {z}")
+
         if b.problems:
             failures.append(f"{len(b.problems)} page exceptions (first: {b.problems[0]})")
         if b.console:
@@ -915,6 +944,41 @@ async def check_multi():
                 failures.append("a winner's panel showed no hand")
         if first_sight and first_sight["panel"] and not first_sight["banner"]:
             failures.append("the settlement appeared before its announcement")
+
+        # The hand that decides a match must still be settled before the result,
+        # and while the board is held no live control may remain on screen: the
+        # render that would remove them is deferred, so a stale button could
+        # still send an action the table had left.
+        await b.ev("""(() => {
+            const score = {yaku: [["Pinfu", 1]], han: 1, fu: 30, yakuman: 0, base: 240,
+                           is_dealer: false, dora_han: 0, ura_han: 0, aka_han: 0};
+            document.getElementById('overlay').classList.add('hidden');
+            const bar = document.getElementById('action-bar');
+            bar.innerHTML = '<button>荣和</button><button>跳过</button>';
+            absorbEvents([{Win: {seat: 1, from: 0, tile: 4, score, deltas: [0, 0, 0, 0],
+                riichi_sticks_taken: 0, paid: 1000, pao_payer: null, nagashi: false,
+                hand: [0, 4, 8, 12], melds: []}}]);
+            handle({type: 'game_end', scores: [0, 0, 0, 0], ranking: [0, 1, 2, 3], rounds: 8});
+        })()""")
+        await asyncio.sleep(0.3)
+        stale = await b.ev("document.getElementById('action-bar').querySelectorAll('button').length")
+        if stale:
+            failures.append(f"{stale} call buttons survived into the settlement hold")
+        order = []
+        for _ in range(60):
+            st = json.loads(await b.ev("""JSON.stringify({
+                open: !document.getElementById('overlay').classList.contains('hidden'),
+                title: document.getElementById('overlay-title').textContent})"""))
+            if st["open"] and (not order or order[-1] != st["title"]):
+                order.append(st["title"])
+                await b.ev("document.getElementById('overlay-close').click()")
+                await asyncio.sleep(0.2)
+                if st["title"] == "对局结束":
+                    break
+            await asyncio.sleep(0.2)
+        print(f"  match end: {order}")
+        if "对局结束" not in order or len(order) < 2:
+            failures.append(f"the deciding hand was not settled before the result: {order}")
         if b.problems:
             failures.append(f"page exceptions: {b.problems[:2]}")
         if b.console:

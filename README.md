@@ -68,6 +68,9 @@ cargo build --release          # 首次约 2-3 分钟
 .venv/bin/python scripts/ui_check.py paint    # 页面上每张牌都必须真的画出图案（含断网兜底）
 ```
 
+断线时页面会显示"未连接"标签并禁用操作；每局结束的结算面板不会因为紧接着的"对局结束"而丢失。
+```
+
 七个模式都是"布局/规则/交互回归测试"，改完 UI 或规则之后应该像改完引擎之后跑 Rust 测试那样跑它们。
 注意：牌面素材（`web/tiles/*.svg`）是**编译进二进制**的，改完要重新 `cargo build --release`。
 
