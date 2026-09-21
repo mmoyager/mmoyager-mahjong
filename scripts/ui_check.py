@@ -21,6 +21,7 @@ Two modes:
     python3 scripts/ui_check.py tiles    # every tile kind maps to artwork that paints
     python3 scripts/ui_check.py paint    # every tile on screen actually paints
     python3 scripts/ui_check.py pace     # discards paced per seat, call marker, forced discard
+    python3 scripts/ui_check.py meld     # 副露 layout: 暗杠 backs, sideways-tile slot, 加杠 stack
 
 `fit` is the regression check for layout; `play` is the end-to-end check for
 rounds, wins, draws, calls and the final overlay; `riichi` is the rules check
@@ -594,6 +595,38 @@ async def check_panels():
 
 
 # --- settlement checks ------------------------------------------------------
+
+# Measure the shade of a pond tile in each combination that the class names can
+# produce. Built in a throwaway `.pond-grid`, so the real ponds are untouched.
+SHADE_PROBE = r"""
+(() => {
+  const host = document.createElement('div');
+  host.className = 'pond-grid';
+  host.style.cssText = 'position:fixed;left:-9999px;top:0';
+  document.body.appendChild(host);
+  const cases = {
+    plain: '',
+    queued: 'queued',
+    tsumogiri: 'tsumogiri',
+    called: 'called',
+    called_tsumogiri: 'called tsumogiri',
+    queued_tsumogiri: 'queued tsumogiri',
+  };
+  const out = {};
+  for (const [name, extra] of Object.entries(cases)) {
+    const t = tileEl(4, {small: true, extra});
+    host.appendChild(t);
+    out[name] = Math.round(parseFloat(getComputedStyle(t).opacity) * 100) / 100;
+  }
+  host.remove();
+  return JSON.stringify(out);
+})()"""
+
+# The shades the table means: a queued tile is invisible, ツモ切り is dimmed, a
+# tile that was called away is dimmed harder, and a plain tile is untouched.
+SHADES = {"plain": 1.0, "queued": 0.0, "tsumogiri": 0.62, "called": 0.42,
+          "called_tsumogiri": 0.42, "queued_tsumogiri": 0.0}
+
 
 # Play for the *human's own* hand-ending action: take a tsumo or a ron whenever
 # one is offered, otherwise discard. This is the path that used to end the hand
@@ -1287,6 +1320,271 @@ async def check_paint():
         return failures
 
 
+# --- 副露 (called sets) ------------------------------------------------------
+
+# The layout rules, asserted against the client's own meld renderer. Everything
+# here is measured — the sideways tile's slot, which tiles are face down, the net
+# rotation of a stacked tile, how much it covers the tile under it — rather than
+# counted, because "three tiles in a box" is what the old, wrong rendering
+# already produced.
+#
+# The last block is the falsification: the old flat row must *fail* these rules,
+# so an edit that quietly drops the layout is caught by the probe that is meant
+# to catch it.
+MELD_LAYOUT = r"""
+(() => {
+  const fails = [];
+  const want = (ok, msg) => { if (!ok) fails.push(msg); };
+  const host = document.createElement('div');
+  host.className = 'melds';
+  host.style.cssText = 'position:fixed;left:0;top:0;opacity:0;pointer-events:none;z-index:-1';
+  document.body.appendChild(host);
+
+  // The melder sits at seat 0, so `from` is also the offset from the melder:
+  // 3 = 上家 on their left, 2 = 対面, 1 = 下家 on their right.
+  const build = (kind, from, tiles, called) => {
+    const g = meldGroup({kind, tiles: tiles.concat([0, 0, 0, 0]).slice(0, 4),
+                         len: tiles.length, from, called}, 0, true);
+    host.appendChild(g);
+    return g;
+  };
+  const kids = (g) => [...g.children];
+  const rotIndex = (g) => kids(g).findIndex(k => k.classList.contains('rot'));
+  const rotOf = (g) => kids(g).find(k => k.classList.contains('rot')) || null;
+  const downIdx = (g) => kids(g).map((k, i) => k.classList.contains('down') ? i : -1)
+                                 .filter(i => i >= 0);
+  // Net rotation including every ancestor's transform: a child turned to cancel
+  // its parent's rotation reads 0 here, which is what 加杠 needs.
+  const netDeg = (el) => {
+    let acc = new DOMMatrix();
+    for (let e = el; e && e !== document.body; e = e.parentElement) {
+      const t = getComputedStyle(e).transform;
+      if (t && t !== 'none') acc = new DOMMatrix(t).multiply(acc);
+    }
+    return Math.round(Math.atan2(acc.b, acc.a) * 180 / Math.PI);
+  };
+  const box = (el) => { const r = el.getBoundingClientRect();
+    return {l: r.left, t: r.top, r: r.right, b: r.bottom}; };
+  const overlap = (a, b) => {
+    const w = Math.min(a.r, b.r) - Math.max(a.l, b.l);
+    const h = Math.min(a.b, b.b) - Math.max(a.t, b.t);
+    if (w <= 0 || h <= 0) return 0;
+    const small = Math.min((a.r - a.l) * (a.b - a.t), (b.r - b.l) * (b.b - b.t));
+    return (w * h) / small;
+  };
+
+  // 碰: the sideways tile's *slot* is what records the seat it came from.
+  for (const [from, slot] of [[3, 0], [2, 1], [1, 2]]) {
+    const g = build('Pon', from, [4, 5, 6], 5);
+    want(kids(g).length === 3, `碰 from ${from}: ${kids(g).length} tiles, want 3`);
+    want(rotIndex(g) === slot,
+         `碰 from ${from}: sideways tile at slot ${rotIndex(g)}, want ${slot}`);
+    want(downIdx(g).length === 0, `碰 from ${from}: a tile is face down`);
+  }
+
+  // 吃: the called tile lies sideways at the left end, whoever it came from.
+  for (const from of [3, 2, 1]) {
+    const g = build('Chi', from, [8, 12, 17], 12);
+    const rot = rotOf(g);
+    want(rotIndex(g) === 0, `吃 from ${from}: sideways tile at slot ${rotIndex(g)}, want 0`);
+    want(!!rot && rot.dataset.tile === '12',
+         `吃 from ${from}: the tile lying sideways is ${rot && rot.dataset.tile}, want the called 12`);
+  }
+
+  // 大明杠: four face up, the sideways tile first / second / fourth.
+  for (const [from, slot] of [[3, 0], [2, 1], [1, 3]]) {
+    const g = build('Minkan', from, [4, 5, 6, 7], 5);
+    want(kids(g).length === 4, `大明杠 from ${from}: ${kids(g).length} tiles, want 4`);
+    want(rotIndex(g) === slot,
+         `大明杠 from ${from}: sideways tile at slot ${rotIndex(g)}, want ${slot}`);
+    want(downIdx(g).length === 0, `大明杠 from ${from}: a tile is face down`);
+  }
+
+  // 暗杠: the outer pair is face down, and the middle pair still names the tile.
+  const ankan = build('Ankan', 0, [4, 5, 6, 7], 4);
+  want(kids(ankan).length === 4, `暗杠: ${kids(ankan).length} tiles, want 4`);
+  want(JSON.stringify(downIdx(ankan)) === '[0,3]',
+       `暗杠: face-down tiles at slots ${JSON.stringify(downIdx(ankan))}, want [0,3]`);
+  want(rotIndex(ankan) === -1, '暗杠: a tile is lying sideways');
+  want(ankan.querySelectorAll('.tile-face').length === 2,
+       `暗杠: ${ankan.querySelectorAll('.tile-face').length} printed faces, want 2`);
+
+  // 加杠: the added tile rides upright on the sideways tile.
+  const kakan = build('Kakan', 1, [4, 5, 6, 7], 7);
+  want(kids(kakan).length === 3, `加杠: ${kids(kakan).length} tiles in the row, want 3`);
+  const krot = rotOf(kakan);
+  want(!!krot, '加杠: no tile is lying sideways');
+  if (krot) {
+    const stacked = krot.querySelector('.tile.stacked');
+    want(!!stacked, '加杠: the added tile is not on the sideways tile');
+    want(krot.querySelectorAll(':scope > .tile.stacked').length === 1,
+         `加杠: the sideways tile has `
+         + krot.querySelectorAll(':scope > .tile.stacked').length
+         + ' stacked children, want 1');
+    if (stacked) {
+      want(stacked.dataset.tile === '7',
+           `加杠: the stacked tile is ${stacked.dataset.tile}, want the added 7`);
+      want(Math.abs(netDeg(stacked)) < 2,
+           `加杠: the stacked tile is turned ${netDeg(stacked)}deg, want upright`);
+      want(Math.abs(Math.abs(netDeg(krot)) - 90) < 2,
+           `加杠: the sideways tile is turned ${netDeg(krot)}deg, want 90`);
+      const ov = overlap(box(krot), box(stacked));
+      want(ov > 0.3,
+           `加杠: the added tile covers only ${Math.round(ov * 100)}% of the sideways tile`);
+    }
+  }
+
+  // 加杠 records where its 碰 came from, not where the added tile came from: the
+  // added tile is self-drawn, so the raw `from` always reads as the melder and
+  // the sideways tile would point at the wrong seat. This is the bug the engine
+  // now carries `pon_from` for.
+  const kakanFrom = meldGroup({kind: 'Kakan', tiles: [4, 5, 6, 7], len: 4,
+                               from: 1, called: 7, pon_from: 3}, 0, true);
+  host.appendChild(kakanFrom);
+  want(rotIndex(kakanFrom) === 0,
+       `加杠 (碰 from 上家): sideways tile at slot ${rotIndex(kakanFrom)}, want 0`);
+  want((kakanFrom.getAttribute('aria-label') || '').indexOf('上家') >= 0,
+       `加杠 (碰 from 上家): the label says ${kakanFrom.getAttribute('aria-label')}`);
+
+  // Every set says in words what it is and where it came from: the sideways slot
+  // is the convention, but a player who does not know it must still be told.
+  const spoken = [
+    ['Pon', 3, [4, 5, 6], 5, '上家'], ['Pon', 1, [4, 5, 6], 5, '下家'],
+    ['Chi', 3, [8, 12, 17], 12, '上家'], ['Ankan', 0, [4, 5, 6, 7], 4, '自家'],
+  ];
+  for (const [kind, from, tiles, called, word] of spoken) {
+    const g = build(kind, from, tiles, called);
+    const label = g.getAttribute('aria-label') || '';
+    want(label.indexOf(word) >= 0, `${kind}: the label does not name ${word} (${label})`);
+    want((g.getAttribute('title') || '').length > 0, `${kind}: no tooltip`);
+  }
+
+  const checked = host.querySelectorAll('.meld').length;
+  // The old rendering: three tiles in a flat row. It must violate the rules
+  // above, or they are not testing anything.
+  const old = document.createElement('div');
+  old.className = 'meld';
+  [4, 5, 6].forEach(t => old.appendChild(tileEl(t, {small: true})));
+  host.appendChild(old);
+  want(rotIndex(old) === -1 && downIdx(old).length === 0,
+       'self-test: the old flat row satisfies the layout rules, so they prove nothing');
+
+  host.remove();
+  return JSON.stringify({fails, checked});
+})()"""
+
+# The same rules, read off whatever is on the table right now.
+MELD_LIVE = r"""
+JSON.stringify([...document.querySelectorAll('.melds .meld')].map(g => {
+  const kids = [...g.children];
+  return {kind: g.dataset.meld, source: g.dataset.source, sideways: g.dataset.sideways,
+          n: kids.length,
+          rot: kids.findIndex(k => k.classList.contains('rot')),
+          down: kids.map((k, i) => k.classList.contains('down') ? i : -1).filter(i => i >= 0),
+          faces: g.querySelectorAll('.tile-face').length,
+          label: g.getAttribute('aria-label') || ''};
+}))"""
+
+MELD_NAMES = {"chi": "吃", "pon": "碰", "ankan": "暗杠", "minkan": "大明杠", "kakan": "加杠"}
+
+# Take a call whenever the table offers one. The layout check needs real 副露,
+# and the trained agents mostly keep their hands closed until late.
+CALL_STEP = r"""
+(() => {
+  const bar = document.getElementById('action-bar');
+  if (!bar) return null;
+  const call = [...bar.querySelectorAll('button')]
+    .find(b => /^(碰|吃|杠|暗杠|加杠|大明杠)/.test(b.textContent.trim()));
+  if (!call) return null;
+  const label = call.textContent.trim();
+  call.click();
+  return label;
+})()"""
+
+
+def meld_live_failures(found):
+    """Check the called sets the table is showing against the layout rules."""
+    bad = []
+    for m in found:
+        name = MELD_NAMES.get(m["kind"])
+        if not name:
+            bad.append(f"unknown meld kind {m['kind']!r}")
+            continue
+        want = 4 if m["kind"] in ("ankan", "minkan", "kakan") else 3
+        if m["n"] != want:
+            bad.append(f"{name}: {m['n']} tiles, want {want}")
+        if m["kind"] == "ankan":
+            if m["down"] != [0, 3]:
+                bad.append(f"{name}: face-down slots {m['down']}, want [0, 3]")
+            if m["rot"] != -1:
+                bad.append(f"{name}: a tile is lying sideways")
+            if m["faces"] != 2:
+                bad.append(f"{name}: {m['faces']} printed faces, want 2")
+        elif m["kind"] == "kakan":
+            if m["rot"] < 0:
+                bad.append(f"{name}: nothing is lying sideways")
+        else:
+            if m["sideways"] is None:
+                bad.append(f"{name}: no sideways slot recorded")
+            elif m["rot"] != int(m["sideways"]) - 1:
+                bad.append(f"{name}: sideways tile at slot {m['rot']}, "
+                           f"but the layout says {int(m['sideways']) - 1}")
+        if name not in m["label"]:
+            bad.append(f"{name}: the label does not say {name} ({m['label']!r})")
+    return bad
+
+
+async def check_meld():
+    """Called sets must be laid out the way a table lays them out.
+
+    The sideways tile is the only thing that tells a player where a called tile
+    came from, so this checks it twice: the renderer is driven directly over all
+    five kinds and all three sources, and then whatever the table shows during a
+    real game is read back and held to the same rules.
+    """
+    failures = []
+    async with Browser("1280,800") as b:
+        if await b.ev("typeof meldGroup === 'function'") is not True:
+            return ["the client does not expose meldGroup, so the layout cannot be probed"]
+        st = json.loads(await b.ev(MELD_LAYOUT))
+        print(f"  layout rules: {st['checked']} sets built, {len(st['fails'])} violations")
+        failures.extend(st["fails"])
+
+        # And on the real table: call whenever a call is offered, so the check
+        # sees real 副露 rather than waiting for the bots to open a hand (the
+        # trained agents mostly stay closed).
+        await b.new_game("tonpuu")
+        found = []
+        called = []
+        for _ in range(900):
+            found = json.loads(await b.ev(MELD_LIVE))
+            if found:
+                break
+            what = await b.ev(CALL_STEP)
+            if what:
+                called.append(what)
+                # The decision was just answered: let the next state arrive
+                # instead of clicking at a table that no longer exists.
+                await asyncio.sleep(0.2)
+                continue
+            await b.ev(SETTLE_STEP)
+            await asyncio.sleep(0.05)
+        if called:
+            print(f"  called: {called[:4]}")
+        if not found:
+            print("  note: no called set appeared in this run")
+        else:
+            print("  on the table: " + "; ".join(
+                f"{MELD_NAMES.get(m['kind'], m['kind'])} n={m['n']} "
+                f"slot={m['rot'] + 1} down={m['down']} {m['label']}" for m in found[:4]))
+            failures.extend(meld_live_failures(found))
+        if b.problems:
+            failures.append(f"{len(b.problems)} page exceptions (first: {b.problems[0]})")
+        if b.console:
+            failures.append(f"{len(b.console)} console errors (first: {b.console[0]})")
+        return failures
+
+
 # --- pacing and attention cues ----------------------------------------------
 
 async def check_pace():
@@ -1346,10 +1644,17 @@ async def check_pace():
 
         # After riichi the only legal action is the forced discard: the client must
         # show it (drawn tile marked, a note in the hand line) before playing it.
+        #
+        # The slowest step is set here so the beat being checked is long enough to
+        # catch, and the budget is generous: whether a riichi happens at all
+        # depends on the cards, and a short wait fails on a slow hand rather than
+        # on a broken feature.
         await b.ev("document.getElementById('sel-pace').value = '0';"
                    "document.getElementById('sel-pace').dispatchEvent(new Event('change'))")
         saw = False
-        for _ in range(1500):
+        declared = 0
+        hands = 0
+        for _ in range(4000):
             st = json.loads(await b.ev("""JSON.stringify({
                 forced: !!document.querySelector('#hand .tile.drawn.auto-target'),
                 note: document.getElementById('hand-info').classList.contains('auto-note')})"""))
@@ -1359,10 +1664,36 @@ async def check_pace():
                 if not st["note"]:
                     failures.append("the forced discard is marked but not explained")
                 break
-            await b.ev(SETTLE_STEP)
+            what = await b.ev(SETTLE_STEP)
+            if what == "declare-riichi":
+                declared += 1
+            elif what == "new-game":
+                hands += 1
             await asyncio.sleep(0.05)
+        # Whether a riichi happens at all is up to the cards, not the client: if
+        # the player never got there, say so instead of reporting a broken
+        # feature. Once one *is* declared, the forced discard must be shown.
         if not saw:
-            failures.append("never saw the forced riichi discard being shown")
+            at = await b.ev("document.getElementById('round-name').textContent")
+            if declared:
+                failures.append(f"{declared} 立直 were declared but the forced discard was "
+                                f"never shown ({hands} hands played, now at {at})")
+            else:
+                print(f"  note: no 立直 in this run, so the forced discard was not exercised "
+                      f"({hands} hands played, now at {at})")
+
+        # How dark a pond tile ends up is decided by four rules that overlap
+        # (queued / ツモ切り / called / plain), and they were reasoned about
+        # rather than measured the first time — a tile that is both ツモ切り and
+        # called, or one that is still queued, is exactly where the wrong rule
+        # wins. Measure the shades instead of trusting the cascade.
+        shades = json.loads(await b.ev(SHADE_PROBE))
+        print(f"  pond shades: {shades}")
+        for name in ("plain", "queued", "tsumogiri", "called", "called_tsumogiri",
+                     "queued_tsumogiri"):
+            if shades.get(name) != SHADES[name]:
+                failures.append(f"pond shade {name}: {shades.get(name)}, want {SHADES[name]}")
+
         if b.problems:
             failures.append(f"{len(b.problems)} page exceptions (first: {b.problems[0]})")
         if b.console:
@@ -1396,8 +1727,11 @@ async def main():
         failures = await check_paint()
     elif mode == "pace":
         failures = await check_pace()
+    elif mode == "meld":
+        failures = await check_meld()
     else:
-        sys.exit(f"unknown mode {mode!r}; use fit, play, riichi, panels, settle, protocol, multi, seats, match, tiles, paint or pace")
+        sys.exit(f"unknown mode {mode!r}; use fit, play, riichi, panels, settle, protocol, "
+                 f"multi, seats, match, tiles, paint, pace or meld")
     if failures:
         print("\nFAILED:")
         for f in failures:

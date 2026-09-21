@@ -64,6 +64,15 @@ pub struct Meld {
     pub from: u8,
     /// The tile that was taken from a discard (the added tile for 加槓).
     pub called: Tile,
+    /// 加槓 only: the seat the ポン it was added to came from.
+    ///
+    /// `from` cannot carry this — a 加槓's fourth tile is self-drawn, so `from`
+    /// is the melder — but where the ポン came from stays public, and on a real
+    /// table the sideways tile that records it is never moved. Kept in its own
+    /// field rather than folded into `from` so that everything already reading
+    /// `from` (責任払い, the replay's canonical form) keeps its meaning.
+    #[serde(default)]
+    pub pon_from: Option<u8>,
 }
 
 impl Meld {
@@ -85,6 +94,7 @@ impl Meld {
             len: 3,
             from,
             called,
+            pon_from: None,
         }
     }
 
@@ -97,6 +107,7 @@ impl Meld {
             len: 3,
             from,
             called,
+            pon_from: None,
         }
     }
 
@@ -110,7 +121,14 @@ impl Meld {
             len: 4,
             from,
             called,
+            pon_from: None,
         }
+    }
+
+    /// Record where the ポン behind a 加槓 came from; see `pon_from`.
+    pub fn with_pon_from(mut self, seat: u8) -> Self {
+        self.pon_from = Some(seat);
+        self
     }
 
     /// The physical tiles of this meld.

@@ -930,12 +930,18 @@ impl Table {
             .copied()
             .filter(|&t| kind_of(t) == kind)
             .min_by_key(|&t| is_aka_tile(t))?;
-        Some(Meld::kan(
-            MeldKind::Kakan,
-            [pon.tiles[0], pon.tiles[1], pon.tiles[2], added],
-            added,
-            seat,
-        ))
+        // `from` is the melder (the added tile is self-drawn); the ポン's own
+        // source rides along in `pon_from`, because the sideways tile that
+        // records it stays on the table and must keep telling the truth.
+        Some(
+            Meld::kan(
+                MeldKind::Kakan,
+                [pon.tiles[0], pon.tiles[1], pon.tiles[2], added],
+                added,
+                seat,
+            )
+            .with_pon_from(pon.from),
+        )
     }
 
     fn call_decision(&self, seat: u8, from: u8, tile: Tile, calls_allowed: bool) -> Decision {
@@ -2667,6 +2673,54 @@ mod tests {
         assert!(t.players[1].drawn_is_rinshan);
         assert_eq!(t.wall.remaining(), before - 1); // the rinshan tile
         assert_eq!(t.phase, Phase::Turn { seat: 1 });
+    }
+
+    /// A 加槓 replaces its ポン, and `from` cannot carry the ポン's source (the
+    /// added tile is self-drawn, so `from` is the melder). The source still has
+    /// to survive: it is public information, and the client draws the sideways
+    /// tile from it.
+    #[test]
+    fn kakan_remembers_where_its_pon_came_from() {
+        let mut t = table(11);
+        set_hand(&mut t, 1, "55m123p456p789p1z");
+        force_discard(&mut t, 0, "5m", 2);
+        let pon = t
+            .decisions()
+            .iter()
+            .find(|d| d.seat == 1)
+            .expect("seat 1 may call")
+            .actions
+            .iter()
+            .find(|a| a.kind() == crate::action::ActionKind::Pon)
+            .copied()
+            .expect("pon is offered");
+        pass_others(&mut t, 1);
+        t.submit(1, pon).unwrap();
+        let melds = &t.players[1].melds;
+        assert_eq!(melds[0].kind, MeldKind::Pon);
+        assert_eq!(melds[0].from, 0, "the pon came from seat 0");
+        assert_eq!(melds[0].pon_from, None, "a pon carries no pon_from");
+
+        set_hand(&mut t, 1, "5m123p456p789p1z");
+        t.phase = Phase::Turn { seat: 1 };
+        t.refresh_decisions();
+        let kakan = t
+            .decisions()
+            .iter()
+            .find(|d| d.seat == 1)
+            .expect("seat 1 has a decision")
+            .actions
+            .iter()
+            .find(|a| matches!(a, Action::Meld { meld } if meld.kind == MeldKind::Kakan))
+            .copied()
+            .expect("kakan is offered");
+        t.submit(1, kakan).unwrap();
+
+        let melds = &t.players[1].melds;
+        assert_eq!(melds[0].kind, MeldKind::Kakan);
+        assert_eq!(melds[0].len, 4, "the pon became a quad");
+        assert_eq!(melds[0].from, 1, "the added tile came from the melder");
+        assert_eq!(melds[0].pon_from, Some(0), "the pon's source is kept");
     }
 
     /// 加槓 is only a kan once its 搶槓 window closes: a robbed 加槓 must not

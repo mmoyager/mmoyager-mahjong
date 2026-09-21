@@ -131,7 +131,10 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
    sized the rotated frames from 25x34 — 12px of overflow onto the neighbouring
    panels. Keep this selector stronger than `.tile.small`. */
 #ring .pond-grid .tile { --w: var(--pond-tile-w); --h: var(--pond-tile-h); }
-.pond-grid .tile.called { opacity: 0.42; }
+/* A discard that was called away is dimmed hard. `--tg-op` carries the same value
+   to the landing animation, which fades in *to* the tile's resting opacity
+   instead of to 1 and then snapping down (see the pacing block). */
+.pond-grid .tile.called { --tg-op: 0.42; opacity: 0.42; }
 
 #centre-panel {
   grid-area: centre; display: flex; flex-direction: column; align-items: center; gap: 6px;
@@ -204,6 +207,9 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
 }
 /* 立直宣言牌 lies sideways in the pond, the way a real table reads it */
 .tile.rot { transform: rotate(90deg); margin: 3px calc(var(--w) * 0.2); }
+/* A tile turned face down: 暗槓's two outer tiles. It keeps the same body and
+   loses only the printed face, because which tile it is stays public knowledge. */
+.tile.down { background-image: url("/tiles/Back.svg?v=2"); }
 .tile.fresh { animation: tile-drop 0.16s ease-out; }
 @keyframes tile-drop {
   from { transform: translateY(-9px) scale(0.94); opacity: 0.35; }
@@ -231,6 +237,19 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
 .melds { display: flex; gap: 8px; flex-wrap: wrap; }
 .melds .meld { display: flex; gap: 1px; padding: 2px; border-radius: 5px; background: rgba(0,0,0,0.22); }
 .melds .meld .tile { --w: 24px; --h: 33px; }
+/* The sideways tile of a called set. Its *slot* records which seat the tile came
+   from (see meldGroup in app.js), never the direction of the tilt, so every
+   called set turns the same way. 270deg matches the reference client 電脳麻将. */
+.melds .meld .tile.rot, .settle-hand .meld .tile.rot { transform: rotate(270deg); }
+/* 加杠: the added tile rides on top of the sideways tile. It is a child of that
+   tile, so it is counter-rotated to stay upright, and offset just enough that
+   both tiles stay legible — a real table stacks them flush, but a 24 px chip
+   that hides the tile underneath would hide which seat the 碰 came from. */
+.melds .meld .tile.rot > .tile.stacked, .settle-hand .meld .tile.rot > .tile.stacked {
+  position: absolute; inset: 0; z-index: 1;
+  transform: rotate(90deg) translate(-2px, -2px);
+  filter: drop-shadow(-2px 2px 2px rgba(0, 0, 0, 0.55));
+}
 
 /* ---------- actions ---------- */
 /* Its own grid row above the hand, and above everything else in stacking order,
@@ -492,10 +511,16 @@ body.offline #action-bar button { opacity: 0.5; }
 /* A discard that is waiting its turn in the queue: present in the DOM (so the
    layout is final) but not yet visible. */
 .pond-grid .tile.queued { opacity: 0; }
+/* ツモ切り is marked by shade alone. `--tg-op` is the tile's resting opacity, so
+   the landing animation can fade in *to* it instead of to 1 and then snapping
+   down when the animation ends. A tile that has not been revealed yet stays
+   invisible whatever shade it will have later, and a tile that was *called* keeps
+   its own darker shade (`.called` above) rather than being lightened to this. */
+.pond-grid .tile.tsumogiri:not(.queued):not(.called) { --tg-op: 0.62; opacity: 0.62; }
 .pond-grid .tile.arriving { animation: tile-land 0.22s ease-out; }
 @keyframes tile-land {
-  from { transform: translateY(-10px) scale(1.18); opacity: 0.15; }
-  to   { transform: translateY(0) scale(1); opacity: 1; }
+  from { transform: translateY(-10px) scale(1.18); opacity: calc(var(--tg-op, 1) * 0.15); }
+  to   { transform: translateY(0) scale(1); opacity: var(--tg-op, 1); }
 }
 /* The drawn tile pulses while the forced automatic discard is about to happen. */
 #hand-info.auto-note::before {

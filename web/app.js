@@ -33,13 +33,21 @@ const DRAW_REASONS = {
 // How fast discards appear, in milliseconds per tile. The table plays the
 // server's events out one discard at a time instead of dropping a whole round on
 // screen at once: at machine speed nobody can follow who threw what.
+//
+// The five steps and the 600 ms default are the reference client's: 電脳麻将's
+// `set speed(speed){ this.dwell = speed*200 }` with speed 1-5, default 3 — and
+// that dwell is its call window and the floor under every shout as well. Nothing
+// here goes below 200 ms, because under that two discards can be mid-animation
+// at once and the order they were thrown in stops reading.
 const PACE_STEPS = [
-  { name: "慢", ms: 520 },
-  { name: "正常", ms: 300 },
-  { name: "快", ms: 150 },
-  { name: "极快", ms: 40 },
+  { name: "极慢", ms: 1000 },
+  { name: "慢", ms: 800 },
+  { name: "正常", ms: 600 },
+  { name: "快", ms: 400 },
+  { name: "极快", ms: 200 },
 ];
-let paceIndex = 1;
+const PACE_DEFAULT = 2;
+let paceIndex = PACE_DEFAULT;
 
 let socket = null;
 let state = null;
@@ -201,6 +209,17 @@ function tileEl(tile, opts = {}) {
     + (opts.extra ? " " + opts.extra : "");
   el.dataset.kind = String(k);
   el.dataset.tile = String(tile);
+
+  // A tile turned face down (暗槓's outer two, or an opponent's concealed tile).
+  // The back is a plain image with no per-tile face, so there is nothing to
+  // probe and nothing that can render half-drawn: `el.dataset.tile` still
+  // records which tile it is, which matters because an 暗槓's tiles are public.
+  if (opts.down) {
+    el.classList.add("down");
+    el.dataset.down = "1";
+    if (opts.label) el.setAttribute("aria-label", opts.label);
+    return el;
+  }
 
   // The face is a *background* image, not an <img>.
   //
@@ -500,10 +519,81 @@ function render() {
         (p.riichi ? " · 立直" : "");
     }
   }
+  // Everything that answers this batch waits for the batch to be on screen: see
+  // `paceNewDiscards`. The hold has to start *before* the hand is drawn, because
+  // the hand decides whether its tiles are clickable.
+  const pausedMs = paceNewDiscards(PENDING_DISCARDS.splice(0));
+  if (pausedMs > 0) holdControls(pausedMs + 40);
   renderHand(view, human);
+  if (pausedMs > 0) {
+    // `holdControls`' timer draws them once the last tile has landed.
+    const bar = document.getElementById("action-bar");
+    if (bar) bar.innerHTML = "";
+    clearCallMarks();
+  } else {
+    releaseControls();
+  }
+}
+
+/// True while the controls are deliberately held back: either the table is still
+/// playing discards out, or a settlement is on screen.
+let controlsHeld = false;
+/// The pending hold, so a newer render replaces an older wait instead of
+/// stacking two timers that would each redraw the bar.
+let controlTimer = null;
+
+function holdControls(ms) {
+  controlsHeld = true;
+  // A forced discard that is already counting down must not fire while the table
+  // is still playing this batch out, and its "自动打出…" note must not sit there
+  // pointing at a decision that is on hold: cancel both, and let
+  // `releaseControls` arm it again.
+  stopForcedDecision();
+  clearTimeout(controlTimer);
+  controlTimer = setTimeout(() => {
+    controlTimer = null;
+    releaseControls();
+  }, ms);
+}
+
+/// Cancel a forced discard that is waiting to be played. Clearing `forcedFor` is
+/// what lets it be armed again for the same decision.
+function stopForcedDecision() {
+  clearTimeout(forcedTimer);
+  forcedTimer = null;
+  forcedFor = null;
+  const info = document.getElementById("hand-info");
+  if (info) info.classList.remove("auto-note");
+}
+
+/// Draw the controls now, unless a hold still owns them.
+function releaseControls() {
+  if (controlTimer !== null) return;
+  controlsHeld = false;
+  // A settlement that started during the wait owns the screen now; its own path
+  // releases the controls once the player closes the last panel.
+  if (boardHold || panelQueue.length || pendingSettlement.length || settlementOpen()) return;
+  // The hand was drawn *while the hold was on*, so it came out unclickable. It
+  // has to be drawn again here: without this the player sees the discards land,
+  // gets no buttons, and cannot act at all — the table simply stops.
+  if (state && state.view) renderHand(state.view, state.human);
   renderActions();
-  paceNewDiscards(PENDING_DISCARDS.splice(0));
   autoPlayForcedDecision();
+}
+
+/// Drop the controls without letting the hold redraw them: used when the board
+/// itself is being held on a finished hand.
+function cancelControls() {
+  clearTimeout(controlTimer);
+  controlTimer = null;
+  controlsHeld = true;
+  // Same reasoning as `holdControls`: a forced discard counting down belongs to
+  // the hand that just ended, and playing it would send an action into the next
+  // one.
+  stopForcedDecision();
+  const bar = document.getElementById("action-bar");
+  if (bar) bar.innerHTML = "";
+  clearCallMarks();
 }
 
 /// A seat label short enough for a narrow side box.
@@ -564,7 +654,7 @@ function renderOpponent(slot, p, view, rel) {
   // the hand, so subtracting for melds again would show three tiles too few.
   const vertical = rel === 1 || rel === 3;
   slot.appendChild(backRow(p.hand_count, { vertical }));
-  if (p.melds && p.melds.length) slot.appendChild(meldRow(p.melds, true));
+  if (p.melds && p.melds.length) slot.appendChild(meldRow(p.melds, true, p.seat));
 }
 
 /// The observer's own seat has no box of its own: the hand area at the bottom
@@ -618,15 +708,151 @@ function renderSelf(slot, p, view) {
   // owns that box so a call can never leave tiles invisible.
 }
 
-function meldRow(melds, small) {
+// ---------------------------------------------------------------- called sets
+//
+// 副露 layout. Called sets sit to the right of the hand, oldest first, and one
+// tile of each lies sideways to record where it came from. The layout below
+// follows the reference client 電脳麻将 (kobalab/majiang-ui, `lib/mianzi.js`),
+// whose code agrees with the Japanese rules write-ups on every point:
+//
+//   吃    the called tile lies sideways at the left end, whichever seat it came
+//         from;
+//   碰    the sideways tile is first for 上家, second for 対面, third for 下家;
+//   大明杠 all four tiles face up, the sideways tile first / second / fourth;
+//   暗杠  the two *outer* tiles are face down — [back][face][face][back] — so a
+//         concealed quad still shows the table which tile it is;
+//   加杠  the fourth tile is stacked on the sideways tile.
+//
+// Only the *slot* holding the sideways tile records the source; the direction of
+// the tilt records nothing, so every sideways tile is turned the same way.
+// https://github.com/kobalab/majiang-ui/blob/master/lib/mianzi.js
+const MELD_SOURCE_NAME = { 0: "自家", 1: "下家", 2: "対面", 3: "上家" };
+
+/// The source's offset from the melder: 1 for the player on their right (下家),
+/// 2 for 対面, 3 for the player on their left (上家), 0 for the melder's own
+/// concealed quad.
+///
+/// A 加杠 is the one case where the two seats differ: its own fourth tile came
+/// from the melder (they drew it), while the sideways tile on the table is the
+/// one left over from the ポン, so the seat that matters is the ポン's —
+/// `pon_from`. Getting this wrong would show a 加杠 as coming from 下家 whoever
+/// the ポン was taken from.
+function meldSourceSeat(meld) {
+  if (String(meld.kind) === "Kakan" && meld.pon_from !== null
+      && meld.pon_from !== undefined) {
+    return meld.pon_from;
+  }
+  return meld.from;
+}
+
+function meldSourceOffset(seat, from) {
+  if (from === null || from === undefined) return 0;
+  const melder = seat === null || seat === undefined ? 0 : seat;
+  return (((from - melder) % 4) + 4) % 4;
+}
+
+/// Which slot of the meld the sideways tile occupies. 加杠 reuses the 碰 slot:
+/// the added tile is stacked on that tile, and moving it elsewhere would hide
+/// which player the 碰 came from — the reason real rules insist on the stack.
+function meldSidewaysSlot(kind, offset) {
+  if (kind === "Chi") return 0;
+  if (kind === "Minkan") {
+    // Four slots: 上家 at the far left, 対面 second, 下家 at the far right.
+    if (offset === 3) return 0;
+    return offset === 2 ? 1 : 3;
+  }
+  // 碰 / 加杠: 上家 left, 対面 middle, 下家 right.
+  if (offset === 3) return 0;
+  return offset === 2 ? 1 : 2;
+}
+
+function meldSourceLabel(kind, offset) {
+  if (kind === "Ankan") return "自家手牌";
+  return "来自" + (MELD_SOURCE_NAME[offset] || "?");
+}
+
+/// Read one called set at a glance: 碰 5m5m5m（来自下家）.
+function meldTitle(meld, offset) {
+  const kind = String(meld.kind || "");
+  const tiles = (meld.tiles || []).slice(0, meld.len || 0).map(friendlyTileName).join(" ");
+  const name = ENGINE_MELD[kind.toLowerCase()] || kind;
+  return `${name} ${tiles}（${meldSourceLabel(kind, offset)}）`;
+}
+
+/// One called set, laid out the way a table lays it out.
+function meldGroup(meld, seat, small) {
+  const g = document.createElement("div");
+  const kind = String(meld.kind || "");
+  const offset = meldSourceOffset(seat, meldSourceSeat(meld));
+  const tiles = (meld.tiles || []).slice(0, meld.len || 0);
+  g.className = "meld " + kind.toLowerCase();
+  // `data-*` so the layout is assertable from a test instead of by eye.
+  g.dataset.meld = kind.toLowerCase();
+  g.dataset.source = String(offset);
+  const label = meldTitle(meld, offset);
+  g.title = label;
+  g.setAttribute("aria-label", label);
+
+  if (kind === "Ankan") {
+    // 両端2枚を裏返す: the outer pair lies face down, the middle pair still
+    // names the tile. (Some clubs mirror it — the two inner tiles down — but the
+    // outer pair is the common reading and the one the pro rules spell out.)
+    g.dataset.sideways = "0";
+    g.appendChild(tileEl(tiles[0], { small, down: true, label: label + " 扣放" }));
+    g.appendChild(tileEl(tiles[1], { small, label: label + " " + friendlyTileName(tiles[1]) }));
+    g.appendChild(tileEl(tiles[2], { small, label: label + " " + friendlyTileName(tiles[2]) }));
+    g.appendChild(tileEl(tiles[3], { small, down: true, label: label + " 扣放" }));
+    return g;
+  }
+
+  // The tiles in reading order, plus the one that gets stacked (加杠 only).
+  //
+  // `called` is always in the payload. If it ever stops being there, the layout
+  // must not fall over: a run still has a fixed order, and a quad's four tiles
+  // are one kind, so the first tile stands in for the missing one.
+  const called = (meld.called === null || meld.called === undefined) ? tiles[0] : meld.called;
+  let row;
+  let stacked = null;
+  if (kind === "Chi") {
+    const rest = tiles.filter((t) => t !== called).sort((a, b) => a - b);
+    row = [called, ...rest];
+  } else if (kind === "Kakan") {
+    stacked = called;
+    row = tiles.filter((t) => t !== stacked);
+  } else {
+    row = tiles.slice();
+  }
+
+  const slot = meldSidewaysSlot(kind, offset);
+  g.dataset.sideways = String(slot + 1);
+  const source = meldSourceLabel(kind, offset);
+  row.slice(0, 4).forEach((t, i) => {
+    if (i !== slot) {
+      g.appendChild(tileEl(t, { small, label: label + " " + friendlyTileName(t) }));
+      return;
+    }
+    const rot = tileEl(t, {
+      small, extra: "rot",
+      label: `${label} ${friendlyTileName(t)}（横向，${source}）`,
+    });
+    if (stacked !== null) {
+      // 加杠: the fourth tile lies *on top of* the sideways one. It is rendered
+      // inside the sideways tile and counter-rotated, so it reads upright while
+      // the tile under it stays sideways.
+      rot.appendChild(tileEl(stacked, {
+        small, extra: "stacked",
+        label: label + " " + friendlyTileName(stacked) + "（加杠）",
+      }));
+    }
+    g.appendChild(rot);
+  });
+  return g;
+}
+
+function meldRow(melds, small, seat) {
   const wrap = document.createElement("div");
   wrap.className = "melds";
-  melds.forEach((m) => {
-    const g = document.createElement("div");
-    g.className = "meld";
-    m.tiles.slice(0, m.len).forEach((t) => g.appendChild(tileEl(t, { small })));
-    wrap.appendChild(g);
-  });
+  melds.forEach((m) => wrap.appendChild(meldGroup(m, seat, small)));
   return wrap;
 }
 
@@ -653,8 +879,13 @@ function pace() {
 /// land at the same instant, which is exactly the "everyone plays at light speed"
 /// feel. The order comes from the event list, so the table shows
 /// self → right → across → left the way the hand actually went.
+///
+/// Returns how long the last tile still has to wait: everything that *answers*
+/// this batch — a call button, the hint naming the tile it is about, a forced
+/// discard — has to wait with it, or the button appears over a pond that has not
+/// shown the tile yet. At the slowest step that is nearly three seconds early.
 function paceNewDiscards(pending) {
-  if (!pending.length) return;
+  if (!pending.length) return 0;
   const step = pace();
   const order = [];
   const events = (state && state.view && state.view.events) || [];
@@ -673,6 +904,7 @@ function paceNewDiscards(pending) {
       setTimeout(() => p.el.classList.remove("arriving"), 220);
     }, delay);
   });
+  return (order.length - 1) * step;
 }
 
 function renderPond(frame, discards, rotDeg, seat) {
@@ -707,6 +939,11 @@ function renderPond(frame, discards, rotDeg, seat) {
     let extra = "";
     if (d.called_by !== null && d.called_by !== undefined) extra += " called";
     if (sideways.has(i)) extra += " rot";
+    // ツモ切り: the tile was the one just drawn, so it was never a choice. Every
+    // client shades it, and a real table gives it away for free — anyone watching
+    // sees the tile go straight from the wall to the pond. Shade only, no motion:
+    // movement would read as a fresh discard.
+    if (d.tsumogiri) extra += " tsumogiri";
     if (i === last) extra += " fresh";
     grid.appendChild(tileEl(d.tile, { small: true, extra }));
   });
@@ -733,10 +970,14 @@ function renderHand(view, human) {
   meldsEl.innerHTML = "";
   // Called sets are gone from `me.hand`, so without this the tiles a call took
   // would simply vanish from the board.
-  if (me.melds && me.melds.length) meldsEl.appendChild(meldRow(me.melds, true));
+  if (me.melds && me.melds.length) meldsEl.appendChild(meldRow(me.melds, true, human));
 
   const decision = state.decision;
-  const discardable = !boardHold && !panelQueue.length && decision
+  // `controlsHeld` covers the paced hold too: while the table is still playing
+  // this batch's discards out, the hand must not take a click any more than the
+  // action bar takes one — the player is watching the other seats, and a discard
+  // sent now would be answered by a table that has already moved on.
+  const discardable = !controlsHeld && !boardHold && !panelQueue.length && decision
     ? decision.actions.some((a) => a.Discard)
     : false;
   // After 立直 the hand is locked: the engine offers the drawn tile and nothing
@@ -778,8 +1019,12 @@ function renderHand(view, human) {
     handEl.appendChild(tileEl(drawn, {
       clickable: canPlay,
       disabled: discardable && !canPlay,
-      extra: "drawn" + (locked && state.decision && state.decision.actions
-        && state.decision.actions.length === 1 ? " auto-target" : ""),
+      // The pulse means "this is about to be played for you", so it belongs
+      // together with the note `autoPlayForcedDecision` writes — and neither may
+      // appear while the controls are held back for the table to finish.
+      extra: "drawn" + (locked && !controlsHeld && state.decision
+        && state.decision.actions && state.decision.actions.length === 1
+        ? " auto-target" : ""),
       label: (riichiMode ? "立直并打出刚摸到的 " : "打出刚摸到的 ") + friendlyTileName(drawn),
       onClick: clickTile(drawn),
     }));
@@ -861,11 +1106,17 @@ function callTarget() {
   return null;
 }
 
+/// Drop the call marks. They are cleared whenever the buttons that go with them
+/// are cleared, so the pond never points at a tile the player can no longer call.
+function clearCallMarks() {
+  document.querySelectorAll(".tile.callable").forEach((e) => e.classList.remove("callable"));
+  document.querySelectorAll(".pond-slot.callable").forEach((e) => e.classList.remove("callable"));
+}
+
 /// Mark the tile a call window is about, in the pond it came from, and tint that
 /// pond. Without this the player has to hunt through four ponds for the tile.
 function markCallTarget() {
-  document.querySelectorAll(".tile.callable").forEach((e) => e.classList.remove("callable"));
-  document.querySelectorAll(".pond-slot.callable").forEach((e) => e.classList.remove("callable"));
+  clearCallMarks();
   const target = callTarget();
   if (!target || target.seat === null || target.seat === undefined) return;
   const rel = (target.seat - state.human + 4) % 4;
@@ -896,7 +1147,9 @@ let forcedTimer = null;
 let forcedFor = null;
 
 function autoPlayForcedDecision() {
-  if (!state || !state.decision || boardHold || panelQueue.length) return;
+  // `controlsHeld` keeps the forced 摸切 in step with the table: it is played by
+  // the hold timer once this batch's discards have landed.
+  if (!state || !state.decision || controlsHeld || boardHold || panelQueue.length) return;
   const acts = state.decision.actions || [];
   if (acts.length !== 1) return;
   const only = acts[0];
@@ -1023,7 +1276,11 @@ function absorbEvents(events) {
   // The announcement comes first and the settlement follows it: a big 自摸 in
   // the middle of the table, then the panel with the hand and the yaku. Showing
   // both at once would bury the announcement behind the panel.
-  let announceMs = 1200;
+  //
+  // The wait is one beat of the table's own pace plus 400 ms — the reference
+  // client's rule — with a floor, because the panel covers the middle of the
+  // table and a shout nobody managed to read is worse than a pause.
+  let announceMs = Math.max(800, pace() + 400);
   if (wins.length) {
     // Settle winners in play order from the discarder: that is counter-clockwise
     // at the table, and it is the order every ruleset describes.
@@ -1036,8 +1293,9 @@ function absorbEvents(events) {
     settled.forEach((w) => queue.push({ kind: "win", data: w }));
     if (wins.length > 1) {
       // Two ron is the common case; three is normally aborted by the engine as
-      // 三家和了, so the third panel only appears if the rules allow it.
-      announceMs = 1400;
+      // 三家和了, so the third panel only appears if the rules allow it. Two
+      // settlements need longer than one before the first panel covers the shout.
+      announceMs = Math.max(1200, pace() + 900);
       announce(wins.length === 2 ? "双响" : "三响", settled.map((w) => botNames[w.seat]).join("、"),
                announceMs, settled[0].seat);
     } else {
@@ -1119,7 +1377,10 @@ function describeEvent(e) {
   }
   if (e.Kan) {
     const k = e.Kan;
-    return `${who(k.seat)} 杠 ${friendlyTileName(k.meld.tiles[0])}`
+    // Name which of the three kans it was. "杠 5m" leaves the player guessing
+    // whether a concealed quad just went down, and the three mean different
+    // things (喰い下がり, the 搶槓 window, where the dora comes from).
+    return `${who(k.seat)} ${meldKindName(k.meld.kind)} ${friendlyTileName(k.meld.tiles[0])}`
       + (k.dora_indicator !== null && k.dora_indicator !== undefined
         ? `（新宝牌指示牌 ${tileName(k.dora_indicator)}）` : "");
   }
@@ -1172,7 +1433,11 @@ function scoreLine(score) {
 
 /// The winning hand, melds included, with the winning tile marked. A settlement
 /// that only prints a number is not a settlement: this is 報番.
-function handRow(hand, melds, winTile) {
+///
+/// `seat` is the winner's, so the called sets keep the same sideways-tile
+/// convention the table uses. A settlement that redrew them in another order
+/// would make the hand impossible to check against the table it was won on.
+function handRow(hand, melds, winTile, seat) {
   const row = document.createElement("div");
   row.className = "settle-hand";
   const winKind = winTile === null || winTile === undefined ? -1 : kindOf(winTile);
@@ -1182,12 +1447,7 @@ function handRow(hand, melds, winTile) {
     if (extra) marked = true;
     row.appendChild(tileEl(t, { small: true, extra }));
   });
-  (melds || []).forEach((m) => {
-    const g = document.createElement("div");
-    g.className = "meld";
-    m.tiles.slice(0, m.len).forEach((t) => g.appendChild(tileEl(t, { small: true })));
-    row.appendChild(g);
-  });
+  (melds || []).forEach((m) => row.appendChild(meldGroup(m, seat, true)));
   return row;
 }
 
@@ -1208,7 +1468,7 @@ function showWin(w) {
   // The hand that won, so the yaku below can be checked by eye. 流し満貫 has no
   // winning tile, so nothing is marked.
   if (w.hand && w.hand.length) {
-    body.appendChild(handRow(w.hand, w.melds, nagashi ? null : w.tile));
+    body.appendChild(handRow(w.hand, w.melds, nagashi ? null : w.tile, w.seat));
   }
 
   const yaku = document.createElement("p");
@@ -1439,8 +1699,9 @@ let bannerTimer = null;
 /// screen and clicking one would send an action the table has already left.
 function holdBoard() {
   boardHold = true;
-  const bar = document.getElementById("action-bar");
-  if (bar) bar.innerHTML = "";
+  // A paced hold still waiting must not draw the bar back over a finished hand
+  // when its timer fires.
+  cancelControls();
   const hintBox = document.getElementById("hint-box");
   if (hintBox) hintBox.classList.add("hidden");
 }
@@ -1764,16 +2025,20 @@ document.addEventListener("DOMContentLoaded", () => {
     send(lastRequest);
   });
   // How fast discards appear. Kept in localStorage so a player who prefers a
-  // slower table does not have to set it every session.
+  // slower table does not have to set it every session. A stored value that the
+  // current table of steps no longer covers falls back to the default, because
+  // the step list itself changed once (four steps -> five) and an index out of
+  // range would otherwise leave the selector showing one thing and the table
+  // playing another.
   document.getElementById("sel-pace").addEventListener("change", (ev) => {
     paceIndex = Math.max(0, Math.min(PACE_STEPS.length - 1, Number(ev.target.value) || 0));
     localStorage.setItem("mmj-pace", String(paceIndex));
   });
-  const savedPace = localStorage.getItem("mmj-pace");
-  if (savedPace !== null) {
-    paceIndex = Math.max(0, Math.min(PACE_STEPS.length - 1, Number(savedPace) || 0));
-    document.getElementById("sel-pace").value = String(paceIndex);
+  const savedPace = Number(localStorage.getItem("mmj-pace"));
+  if (Number.isInteger(savedPace) && savedPace >= 0 && savedPace < PACE_STEPS.length) {
+    paceIndex = savedPace;
   }
+  document.getElementById("sel-pace").value = String(paceIndex);
   // The hint costs a network evaluation and a baseline search on the server, so
   // ignore repeat presses instead of queueing them.
   let hintAskedAt = 0;
