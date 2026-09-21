@@ -30,6 +30,17 @@ const DRAW_REASONS = {
   FourRiichi: "四家立直", FourKans: "四槓散了", TripleRon: "三家和了",
 };
 
+// How fast discards appear, in milliseconds per tile. The table plays the
+// server's events out one discard at a time instead of dropping a whole round on
+// screen at once: at machine speed nobody can follow who threw what.
+const PACE_STEPS = [
+  { name: "慢", ms: 520 },
+  { name: "正常", ms: 300 },
+  { name: "快", ms: 150 },
+  { name: "极快", ms: 40 },
+];
+let paceIndex = 1;
+
 let socket = null;
 let state = null;
 let botNames = ["你", "AI", "AI", "AI"];
@@ -189,6 +200,7 @@ function tileEl(tile, opts = {}) {
     + (aka ? " aka" : "")
     + (opts.extra ? " " + opts.extra : "");
   el.dataset.kind = String(k);
+  el.dataset.tile = String(tile);
 
   // The face is a *background* image, not an <img>.
   //
@@ -371,6 +383,7 @@ function handle(msg) {
         lastRoundKey = null;
         deltaScores = null;
         riichiMode = false;
+        for (const seat of [0, 1, 2, 3]) shownDiscards[seat] = 0;
         logs = [];
         const logEl = document.getElementById("log");
         if (logEl) logEl.innerHTML = "";
@@ -480,7 +493,7 @@ function render() {
       renderOpponent(seatSlot, p, view, r);
     }
     const pond = document.getElementById(pondFor[r]);
-    if (pond) renderPond(pond, p.discards, POND_ROT[r]);
+    if (pond) renderPond(pond, p.discards, POND_ROT[r], s);
     const label = document.getElementById(labelFor[r]);
     if (label) {
       label.textContent = (s === human ? "你" : seatName(s)) +
@@ -489,6 +502,8 @@ function render() {
   }
   renderHand(view, human);
   renderActions();
+  paceNewDiscards(PENDING_DISCARDS.splice(0));
+  autoPlayForcedDecision();
 }
 
 /// A seat label short enough for a narrow side box.
@@ -622,7 +637,45 @@ function meldRow(melds, small) {
 /// The riichi declaration tile lies sideways; if that tile is called, the next
 /// discard takes the sideways spot instead, which is what the competition rules
 /// ask for (the marker has to stay in the pond of whoever declared).
-function renderPond(frame, discards, rotDeg) {
+/// Per seat, how many discards are already on screen. New ones are revealed on a
+/// timer so a whole round does not appear at once.
+const shownDiscards = { 0: 0, 1: 0, 2: 0, 3: 0 };
+
+function pace() {
+  return PACE_STEPS[paceIndex].ms;
+}
+
+/// Reveal this batch's new discards **in the order they were thrown**, one seat
+/// at a time.
+///
+/// The state is authoritative and applied at once — only the appearance of new
+/// tiles is paced. Pacing per pond was not enough: one discard per pond then all
+/// land at the same instant, which is exactly the "everyone plays at light speed"
+/// feel. The order comes from the event list, so the table shows
+/// self → right → across → left the way the hand actually went.
+function paceNewDiscards(pending) {
+  if (!pending.length) return;
+  const step = pace();
+  const order = [];
+  const events = (state && state.view && state.view.events) || [];
+  for (const e of events) {
+    if (!e.Discard) continue;
+    const i = pending.findIndex((p) => p.seat === e.Discard.seat && p.tile === e.Discard.tile);
+    if (i >= 0) order.push(pending.splice(i, 1)[0]);
+  }
+  order.push(...pending);
+  order.forEach((p, idx) => {
+    p.el.classList.add("queued");
+    const delay = idx * step;
+    setTimeout(() => {
+      p.el.classList.remove("queued");
+      p.el.classList.add("arriving");
+      setTimeout(() => p.el.classList.remove("arriving"), 220);
+    }, delay);
+  });
+}
+
+function renderPond(frame, discards, rotDeg, seat) {
   const grid = frame.querySelector(".pond-grid");
   if (!grid) return;
   grid.innerHTML = "";
@@ -657,7 +710,20 @@ function renderPond(frame, discards, rotDeg) {
     if (i === last) extra += " fresh";
     grid.appendChild(tileEl(d.tile, { small: true, extra }));
   });
+  if (seat !== undefined) {
+    const shown = shownDiscards[seat] || 0;
+    const tiles = [...grid.querySelectorAll(".tile")];
+    for (let i = shown; i < tiles.length; i++) {
+      PENDING_DISCARDS.push({ seat, el: tiles[i],
+                              tile: Number(tiles[i].dataset.tile) });
+    }
+    shownDiscards[seat] = tiles.length;
+  }
 }
+
+/// New discards gathered during the current render, revealed in order at the end
+/// of it.
+const PENDING_DISCARDS = [];
 
 function renderHand(view, human) {
   const me = view.players[human];
@@ -712,7 +778,8 @@ function renderHand(view, human) {
     handEl.appendChild(tileEl(drawn, {
       clickable: canPlay,
       disabled: discardable && !canPlay,
-      extra: "drawn",
+      extra: "drawn" + (locked && state.decision && state.decision.actions
+        && state.decision.actions.length === 1 ? " auto-target" : ""),
       label: (riichiMode ? "立直并打出刚摸到的 " : "打出刚摸到的 ") + friendlyTileName(drawn),
       onClick: clickTile(drawn),
     }));
@@ -783,9 +850,76 @@ function actKind(a) {
   return "?";
 }
 
+/// What the pending decision is about, when it is about somebody else's tile:
+/// `{ seat, tile }` for a discard that can be called, or a kan that can be
+/// robbed. Returns null for the player's own turn.
+function callTarget() {
+  if (!state || !state.decision) return null;
+  const t = state.decision.trigger || {};
+  if (t.Discard) return { seat: t.Discard.from, tile: t.Discard.tile };
+  if (t.Chankan) return { seat: t.Chankan.from, tile: t.Chankan.tile, kan: true };
+  return null;
+}
+
+/// Mark the tile a call window is about, in the pond it came from, and tint that
+/// pond. Without this the player has to hunt through four ponds for the tile.
+function markCallTarget() {
+  document.querySelectorAll(".tile.callable").forEach((e) => e.classList.remove("callable"));
+  document.querySelectorAll(".pond-slot.callable").forEach((e) => e.classList.remove("callable"));
+  const target = callTarget();
+  if (!target || target.seat === null || target.seat === undefined) return;
+  const rel = (target.seat - state.human + 4) % 4;
+  const pond = document.getElementById(pondForRel(rel));
+  if (!pond) return;
+  const tiles = [...pond.querySelectorAll(".tile")];
+  for (let i = tiles.length - 1; i >= 0; i--) {
+    if (Number(tiles[i].dataset.tile) === target.tile) {
+      tiles[i].classList.add("callable");
+      break;
+    }
+  }
+  const slot = pond.closest(".pond-slot");
+  if (slot) slot.classList.add("callable");
+}
+
+function pondForRel(rel) {
+  return ["pond-self", "pond-right", "pond-across", "pond-left"][rel] || "pond-self";
+}
+
+/// Play a decision that has exactly one legal action after a short beat.
+///
+/// The only case in practice is the forced tsumogiri of a riichi hand. The server
+/// used to play it silently, so the player never saw the draw or the discard;
+/// showing the drawn tile for a moment and then throwing it is the whole point of
+/// that phase of the hand.
+let forcedTimer = null;
+let forcedFor = null;
+
+function autoPlayForcedDecision() {
+  if (!state || !state.decision || boardHold || panelQueue.length) return;
+  const acts = state.decision.actions || [];
+  if (acts.length !== 1) return;
+  const only = acts[0];
+  if (!only || typeof only === "string") return;   // never auto-declare a win
+  const signature = JSON.stringify(only) + ":" + (state.view ? state.view.wall_remaining : "");
+  if (forcedFor === signature) return;
+  forcedFor = signature;
+  clearTimeout(forcedTimer);
+  const box = document.getElementById("hand-info");
+  if (box) box.classList.add("auto-note");
+  forcedTimer = setTimeout(() => {
+    if (box) box.classList.remove("auto-note");
+    if (!state || !state.decision) return;
+    const a = (state.decision.actions || [])[0];
+    if (!a || typeof a === "string") return;
+    send({ type: "action", action: a });
+  }, Math.max(420, pace() + 260));
+}
+
 function renderActions() {
   const bar = document.getElementById("action-bar");
   bar.innerHTML = "";
+  markCallTarget();
   if (!state || !state.decision) return;
   // A finished game has no decisions left: re-showing the last ones would offer
   // buttons the server can only reject.
@@ -806,6 +940,16 @@ function renderActions() {
     });
     bar.appendChild(b);
   };
+
+  // Name the tile and its owner next to the buttons: "可鸣：AI 2 打出的 5m".
+  const target = callTarget();
+  if (target && target.seat !== null && target.seat !== undefined && target.seat !== state.human) {
+    const hint = document.createElement("span");
+    hint.className = "call-hint";
+    hint.textContent = (target.kan ? "可抢杠：" : "可鸣：") + who(target.seat)
+      + (target.kan ? " 加杠的 " : " 打出的 ") + friendlyTileName(target.tile);
+    bar.appendChild(hint);
+  }
 
   if (acts.some((a) => a === "Tsumo")) add("自摸", "Tsumo", true);
   if (acts.some((a) => a === "Ron")) add("荣和", "Ron", true);
@@ -1619,6 +1763,17 @@ document.addEventListener("DOMContentLoaded", () => {
     // The seed changes with the game, so `handle` clears the score deltas.
     send(lastRequest);
   });
+  // How fast discards appear. Kept in localStorage so a player who prefers a
+  // slower table does not have to set it every session.
+  document.getElementById("sel-pace").addEventListener("change", (ev) => {
+    paceIndex = Math.max(0, Math.min(PACE_STEPS.length - 1, Number(ev.target.value) || 0));
+    localStorage.setItem("mmj-pace", String(paceIndex));
+  });
+  const savedPace = localStorage.getItem("mmj-pace");
+  if (savedPace !== null) {
+    paceIndex = Math.max(0, Math.min(PACE_STEPS.length - 1, Number(savedPace) || 0));
+    document.getElementById("sel-pace").value = String(paceIndex);
+  }
   // The hint costs a network evaluation and a baseline search on the server, so
   // ignore repeat presses instead of queueing them.
   let hintAskedAt = 0;

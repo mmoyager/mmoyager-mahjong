@@ -20,6 +20,7 @@ Two modes:
     python3 scripts/ui_check.py match    # how a match ends, and reconnect resume
     python3 scripts/ui_check.py tiles    # every tile kind maps to artwork that paints
     python3 scripts/ui_check.py paint    # every tile on screen actually paints
+    python3 scripts/ui_check.py pace     # discards paced per seat, call marker, forced discard
 
 `fit` is the regression check for layout; `play` is the end-to-end check for
 rounds, wins, draws, calls and the final overlay; `riichi` is the rules check
@@ -1286,6 +1287,89 @@ async def check_paint():
         return failures
 
 
+# --- pacing and attention cues ----------------------------------------------
+
+async def check_pace():
+    """Discards must appear one seat at a time, the tile a call is about must be
+    marked, and a forced (riichi) discard must be shown before it happens."""
+    failures = []
+    async with Browser("1280,800") as b:
+        await b.new_game("tonpuu")
+        await asyncio.sleep(1.2)
+        # Our own turn, then watch the table play the batch out.
+        await b.ev("(() => { const t = document.querySelector('#hand .tile.clickable'); if (t) t.click(); })()")
+        sequence = []
+        for _ in range(50):
+            st = json.loads(await b.ev("""JSON.stringify({
+                visible: ['self','right','across','left'].map(s =>
+                    document.querySelectorAll('#pond-' + s + ' .pond-grid .tile:not(.queued)').length),
+                queued: document.querySelectorAll('.pond-grid .tile.queued').length})"""))
+            tag = (tuple(st["visible"]), st["queued"])
+            if not sequence or sequence[-1] != tag:
+                sequence.append(tag)
+            await asyncio.sleep(0.05)
+        print(f"  reveal sequence: {sequence[:8]}")
+        # A batch that lands in several ponds must be seen to grow one pond at a
+        # time: exactly one pond gains a tile between samples.
+        growth = 0
+        for a, c in zip(sequence, sequence[1:]):
+            before, after = a[0], c[0]
+            gained = [i for i in range(4) if after[i] > before[i]]
+            if len(gained) > 1:
+                growth += 1
+        if not any(x[1] > 0 for x in sequence):
+            failures.append("no discard was ever queued: the table plays instantly")
+        if growth:
+            failures.append(f"{growth} samples showed several ponds filling at once")
+        if len(sequence) < 3:
+            failures.append(f"the discards appeared in one step: {sequence}")
+
+        # The tile a call is about must be marked, and named.
+        for _ in range(600):
+            st = json.loads(await b.ev("""JSON.stringify({
+                marked: document.querySelectorAll('.tile.callable').length,
+                tinted: !!document.querySelector('.pond-slot.callable'),
+                hint: (document.querySelector('#action-bar .call-hint') || {}).textContent || null})"""))
+            if st["hint"]:
+                print(f"  call window: {st['hint']!r} marked={st['marked']} pondTinted={st['tinted']}")
+                if st["marked"] != 1:
+                    failures.append(f"the callable tile is not marked: {st}")
+                if not st["tinted"]:
+                    failures.append("the pond the call is about is not tinted")
+                if "打出的" not in st["hint"]:
+                    failures.append(f"the call hint does not name the tile: {st['hint']!r}")
+                break
+            await b.ev(SETTLE_STEP)
+            await asyncio.sleep(0.05)
+        else:
+            print("  note: no call window appeared in this run")
+
+        # After riichi the only legal action is the forced discard: the client must
+        # show it (drawn tile marked, a note in the hand line) before playing it.
+        await b.ev("document.getElementById('sel-pace').value = '0';"
+                   "document.getElementById('sel-pace').dispatchEvent(new Event('change'))")
+        saw = False
+        for _ in range(1500):
+            st = json.loads(await b.ev("""JSON.stringify({
+                forced: !!document.querySelector('#hand .tile.drawn.auto-target'),
+                note: document.getElementById('hand-info').classList.contains('auto-note')})"""))
+            if st["forced"]:
+                saw = True
+                print(f"  forced discard shown (note={st['note']})")
+                if not st["note"]:
+                    failures.append("the forced discard is marked but not explained")
+                break
+            await b.ev(SETTLE_STEP)
+            await asyncio.sleep(0.05)
+        if not saw:
+            failures.append("never saw the forced riichi discard being shown")
+        if b.problems:
+            failures.append(f"{len(b.problems)} page exceptions (first: {b.problems[0]})")
+        if b.console:
+            failures.append(f"{len(b.console)} console errors (first: {b.console[0]})")
+        return failures
+
+
 async def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else "fit"
     if mode == "fit":
@@ -1310,8 +1394,10 @@ async def main():
         failures = await check_tiles()
     elif mode == "paint":
         failures = await check_paint()
+    elif mode == "pace":
+        failures = await check_pace()
     else:
-        sys.exit(f"unknown mode {mode!r}; use fit, play, riichi, panels, settle, protocol, multi, seats, match, tiles or paint")
+        sys.exit(f"unknown mode {mode!r}; use fit, play, riichi, panels, settle, protocol, multi, seats, match, tiles, paint or pace")
     if failures:
         print("\nFAILED:")
         for f in failures:

@@ -435,12 +435,12 @@ impl Session {
             let mut acted = false;
             for d in decisions {
                 let action = if d.seat == self.human {
-                    if d.actions.len() > 1 {
-                        continue; // wait for the player
-                    }
-                    // A single legal option needs no input, e.g. the forced
-                    // tsumogiri of a riichi hand.
-                    d.actions[0]
+                    // Always wait for the player, even when there is only one
+                    // legal action. The forced tsumogiri of a riichi hand used to
+                    // be played here, which meant the player never saw the draw
+                    // and the discard: the hand appeared to play itself. The
+                    // client now plays that single action after a visible beat.
+                    continue;
                 } else {
                     self.agents[d.seat as usize].act(&self.table, d.seat, &d)
                 };

@@ -195,7 +195,9 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
   filter: drop-shadow(0 9px 12px rgba(0,0,0,0.55)) brightness(1.05); }
 .tile.selected { transform: translateY(-8px); }
 .tile.disabled { filter: grayscale(0.8) brightness(0.72); }
-.tile.drawn { margin-left: calc(var(--w) * 0.42); }
+/* The drawn tile is the same size as the rest: the gap alone separates it, and a
+   single oversized tile reads as a mistake rather than as information. */
+.tile.drawn { margin-left: calc(var(--w) * 0.30); }
 .tile.drawn::after {
   content: ""; position: absolute; left: 8%; right: 8%; bottom: -4px; height: 3px;
   border-radius: 2px; background: var(--gold);
@@ -222,7 +224,7 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
 }
 #hand { flex: 1; justify-content: center; gap: 4px; }
 #hand .tile { --w: 46px; --h: 62px; }
-#hand .tile.drawn { --w: 50px; --h: 67px; }
+#hand .tile.drawn { --w: 46px; --h: 62px; }
 #hand-info { display: flex; flex-direction: column; gap: 4px; align-items: flex-end;
   font-size: 13px; color: var(--muted); min-width: 150px; }
 .flag { color: #ffb4b4; font-weight: 700; }
@@ -465,3 +467,48 @@ body.offline #action-bar button { opacity: 0.5; }
 
 /* Monospaced bits in the hint panel (checkpoint name, probabilities). */
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+/* ---------- the discard a call window is about ---------- */
+/* A call window is about one specific tile in one specific pond. Without a mark
+   the player has to hunt through four ponds for it. */
+.tile.callable {
+  box-shadow: 0 0 0 2px var(--gold), 0 0 14px rgba(255, 209, 102, 0.75);
+  border-radius: 3px;
+  z-index: 3;
+  animation: callable-pulse 1.15s ease-in-out infinite;
+}
+@keyframes callable-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px var(--gold), 0 0 10px rgba(255, 209, 102, 0.55); }
+  50%      { box-shadow: 0 0 0 3px #fff0c2, 0 0 18px rgba(255, 209, 102, 0.95); }
+}
+/* The seat whose discard is being offered gets a matching tint, so the eye can
+   find the pond before it finds the tile. */
+.pond-slot.callable { background: rgba(255, 209, 102, 0.10); border-radius: 8px; }
+#action-bar .call-hint {
+  color: var(--gold); font-size: 13px; margin-right: 10px; white-space: nowrap;
+}
+
+/* ---------- pacing ---------- */
+/* A discard that is waiting its turn in the queue: present in the DOM (so the
+   layout is final) but not yet visible. */
+.pond-grid .tile.queued { opacity: 0; }
+.pond-grid .tile.arriving { animation: tile-land 0.22s ease-out; }
+@keyframes tile-land {
+  from { transform: translateY(-10px) scale(1.18); opacity: 0.15; }
+  to   { transform: translateY(0) scale(1); opacity: 1; }
+}
+/* The drawn tile pulses while the forced automatic discard is about to happen. */
+#hand-info.auto-note::before {
+  content: "自动打出…"; color: var(--gold); font-size: 12px; margin-right: 8px;
+}
+#hand .tile.drawn.auto-target { animation: drawn-pulse 0.7s ease-in-out infinite; }
+@keyframes drawn-pulse {
+  0%, 100% { filter: drop-shadow(0 2px 2px rgba(0,0,0,0.4)); }
+  50%      { filter: drop-shadow(0 0 8px rgba(255, 209, 102, 0.9)); }
+}
+/* Respect a user who asked for less motion: the game still works, it just does
+   not animate. */
+@media (prefers-reduced-motion: reduce) {
+  .pond-grid .tile.arriving, #hand .tile.drawn.auto-target,
+  .tile.callable { animation: none; }
+}
