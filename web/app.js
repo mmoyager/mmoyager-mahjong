@@ -468,7 +468,7 @@ function render() {
   // it came from never moves, so nothing is misread.
   for (const e of batch) {
     const m = e.Meld || (e.Kan && String(e.Kan.meld.kind) === "Ankan" ? e.Kan : null);
-    if (m) freshMelds[m.seat] = (freshMelds[m.seat] || 0) + 1;
+    if (m) pendingMelds[m.seat] = (pendingMelds[m.seat] || 0) + 1;
   }
   const roundKey = view.round_wind + ":" + view.round_number + ":" + view.honba;
   if (lastRoundKey !== null && roundKey !== lastRoundKey && lastScores) {
@@ -686,7 +686,7 @@ function renderOpponent(slot, p, view, rel) {
   const vertical = rel === 1 || rel === 3;
   slot.appendChild(backRow(p.hand_count, { vertical }));
   if (p.melds && p.melds.length) {
-    slot.appendChild(meldRow(p.melds, true, p.seat, freshMelds[p.seat]));
+    slot.appendChild(meldRow(p.melds, true, p.seat, pendingMelds[p.seat]));
   }
 }
 
@@ -950,9 +950,12 @@ function pace() {
   return PACE_STEPS[paceIndex].ms;
 }
 
-/// The melds each seat gains in the batch being played back, so a call is shown
-/// on its own beat instead of the instant the state arrives.
-const freshMelds = { 0: 0, 1: 0, 2: 0, 3: 0 };
+/// Per seat, how many of its called sets are still waiting for their beat. A
+/// call is shown on its own beat instead of the instant the state arrives, and
+/// the count is *drained by the reveal* rather than reset per batch: every render
+/// re-derives which melds to hide from it, so a count that was never cleared
+/// would keep the newest set of that seat hidden for the rest of the hand.
+const pendingMelds = { 0: 0, 1: 0, 2: 0, 3: 0 };
 
 /// The seat box on this player's screen, by relative position.
 const SEAT_SLOT_IDS = ["seat-self", "seat-right", "seat-across", "seat-left"];
@@ -972,6 +975,7 @@ function revealMeld(seat) {
   g.classList.remove("queued");
   g.classList.add("landing");
   setTimeout(() => g.classList.remove("landing"), 260);
+  pendingMelds[seat] = Math.max(0, (pendingMelds[seat] || 0) - 1);
 }
 
 /// Work out how a batch plays out, without touching the DOM.
@@ -1194,7 +1198,7 @@ function renderHand(view, human) {
   // Called sets are gone from `me.hand`, so without this the tiles a call took
   // would simply vanish from the board.
   if (me.melds && me.melds.length) {
-    meldsEl.appendChild(meldRow(me.melds, true, human, freshMelds[human]));
+    meldsEl.appendChild(meldRow(me.melds, true, human, pendingMelds[human]));
   }
 
   const decision = state.decision;

@@ -1530,6 +1530,10 @@ JSON.stringify([...document.querySelectorAll('.melds .meld')].map(g => {
           rot: kids.findIndex(k => k.classList.contains('rot')),
           down: kids.map((k, i) => k.classList.contains('down') ? i : -1).filter(i => i >= 0),
           faces: g.querySelectorAll('.tile-face').length,
+          // A set the table has already played out must be visible. A meld that
+          // is still waiting its beat is fine, but a hand that *keeps* hiding one
+          // is a set the player can never see again.
+          shown: Math.round(parseFloat(getComputedStyle(g).opacity) || 0),
           label: g.getAttribute('aria-label') || ''};
 }))"""
 
@@ -1579,6 +1583,10 @@ def meld_live_failures(found):
                            f"but the layout says {int(m['sideways']) - 1}")
         if name not in m["label"]:
             bad.append(f"{name}: the label does not say {name} ({m['label']!r})")
+        if m.get("shown") == 0:
+            bad.append(f"{name}: the set is still hidden after waiting a few beats "
+                       f"({m['label']!r}) — a call that is never revealed is a set the "
+                       "player cannot see again")
     return bad
 
 
@@ -1623,9 +1631,18 @@ async def check_meld():
         if not found:
             print("  note: no called set appeared in this run")
         else:
+            # A set is rendered hidden until its own beat arrives, so give the
+            # playback a few beats before judging whether one stayed hidden: this
+            # is what catches a call that is never revealed at all.
+            for _ in range(40):
+                if all(m.get("shown") for m in found):
+                    break
+                await asyncio.sleep(0.15)
+                found = json.loads(await b.ev(MELD_LIVE)) or found
             print("  on the table: " + "; ".join(
                 f"{MELD_NAMES.get(m['kind'], m['kind'])} n={m['n']} "
-                f"slot={m['rot'] + 1} down={m['down']} {m['label']}" for m in found[:4]))
+                f"slot={m['rot'] + 1} down={m['down']} shown={m.get('shown')} {m['label']}"
+                for m in found[:4]))
             failures.extend(meld_live_failures(found))
         if b.problems:
             failures.append(f"{len(b.problems)} page exceptions (first: {b.problems[0]})")
