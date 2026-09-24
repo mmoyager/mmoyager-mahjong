@@ -396,6 +396,92 @@ RIICHI_STATUS = r"""
 })()"""
 
 
+# The three modes the hand can be drawn in, against a decision built by hand so
+# the expected answer is known exactly. This is the check for the rule the player
+# reported as "sometimes not enforced": with 立直 armed, only the tiles that keep
+# the wait may be playable — and with nothing lit, a click must not send anything.
+RIICHI_MODES = r"""
+(() => {
+  const orig = state;
+  // Only meaningful while the player has something to decide, and a decision
+  // payload to clone.
+  if (!orig || !orig.decision) return JSON.stringify({skip: true});
+  const clone = JSON.parse(JSON.stringify(orig));
+  const human = orig.human;
+  const me = clone.view.players[human];
+  // The probe is about the *pre-declaration* modes, so the copy starts unlocked;
+  // the declared case is set up further down.
+  clone.view.players[human].riichi = false;
+  // `#hand` holds the whole hand *including* the drawn tile, which is drawn last.
+  const hand = [...document.querySelectorAll('#hand .tile')].map(t => Number(t.dataset.tile));
+  const drawn = me.drawn;
+  const tiles = hand.slice();
+  // Two of them keep the wait; the rest do not. The client must light exactly the
+  // two while 立直 is armed, and all of them when it is not.
+  const keepsWait = tiles.slice(0, 2);
+  clone.decision.actions = tiles.map(t => ({Discard: {tile: t, riichi: false}}))
+    .concat(keepsWait.map(t => ({Discard: {tile: t, riichi: true}})));
+
+  const lit = () => [...document.querySelectorAll('#hand .tile.clickable')]
+                       .map(t => Number(t.dataset.tile)).sort((a, b) => a - b);
+  const sent = [];
+  const realSend = send;
+  send = (m) => { sent.push(m); return true; };
+
+  // Stand in for the moment this decision is really the player's: mid-playback or
+  // mid-settlement the hand is drawn unplayable on purpose, and this probe is
+  // about the discard rules, not about the pacing.
+  boardHold = false;
+  panelQueue = [];
+  controlsHeld = false;
+  controlTimer = null;
+  awaitingTurn = false;
+  lastBeatAt = 0;
+  // And show everything the table is still hiding: a render that finds discards or
+  // melds to reveal holds the controls back on purpose, which would leave the hand
+  // unplayable for reasons that have nothing to do with the discard rules.
+  for (const seat of [0, 1, 2, 3]) {
+    visibleDiscards[seat] = 1e9;
+    visibleMelds[seat] = 1e9;
+  }
+
+  state = clone;
+  riichiMode = false; render(); const plain = lit();
+  riichiMode = true;  render(); const armed = lit();
+  // The mode must not survive into a decision that offers no 立直: the hand would
+  // be unplayable and the toggle that explains why would not even be drawn. The
+  // one plain discard that *is* offered must stay playable.
+  const only = drawn === null || drawn === undefined
+    ? (hand.length ? hand[hand.length - 1] : null)
+    : drawn;
+  clone.decision.actions = [{Discard: {tile: only, riichi: false}}];
+  state = clone;
+  riichiMode = true; render();
+  const stale = lit();
+  const staleMode = riichiMode;
+  // And a click on a tile that is *not* playable must not send anything.
+  const before = sent.length;
+  const unlit = [...document.querySelectorAll('#hand .tile')]
+    .find(t => Number(t.dataset.tile) !== only);
+  if (unlit) unlit.click();
+  const sentWhileUnlit = sent.length - before;
+
+  // And a declared 立直: the client may only play the drawn tile.
+  clone.view.players[human].riichi = true;
+  clone.decision.actions = [{Discard: {tile: drawn, riichi: false}}];
+  state = clone;
+  riichiMode = false; render(); const locked = lit();
+
+  send = realSend;
+  state = orig;
+  riichiMode = false; render();
+  return JSON.stringify({tiles: tiles.slice().sort((a, b) => a - b),
+                         keepsWait: keepsWait.slice().sort((a, b) => a - b),
+                         plain, armed, locked, stale, staleMode, only, drawn,
+                         sentWhileUnlit});
+})()"""
+
+
 async def check_riichi():
     """After 立直 the hand is locked: no 吃 / 碰 / 杠 may ever be offered."""
     failures = []
@@ -436,6 +522,39 @@ async def check_riichi():
             await asyncio.sleep(0.05 if step != "idle" else 0.2)
         print(f"立直 rounds: {declared_rounds}; post-立直 observations: {windows}; "
               f"立直 announcements seen: {riichi_banners}")
+
+        # The rule itself, in its three modes, measured rather than assumed. It
+        # needs a moment when the player actually has a decision to look at.
+        modes = {"skip": True}
+        for _ in range(40):
+            modes = json.loads(await b.ev(RIICHI_MODES))
+            if not modes.get("skip"):
+                break
+            await asyncio.sleep(0.25)
+        if modes.get("skip"):
+            failures.append("never caught a decision to check the discard rules against")
+            return failures
+        print(f"  modes: plain={len(modes['plain'])}/{len(modes['tiles'])} tiles playable, "
+              f"立直-armed={modes['armed']} (wait-keeping {modes['keepsWait']}), "
+              f"declared={len(modes['locked'])} tile(s)")
+        if sorted(modes["plain"]) != sorted(modes["tiles"]):
+            failures.append(f"with no 立直 armed, {len(modes['plain'])} of "
+                            f"{len(modes['tiles'])} discards are playable")
+        if sorted(modes["armed"]) != sorted(modes["keepsWait"]):
+            failures.append(f"with 立直 armed the client lights {modes['armed']} but only "
+                            f"{modes['keepsWait']} keep the wait")
+        if modes.get("staleMode"):
+            failures.append("立直 stayed armed into a decision that offers none, which leaves "
+                            "every tile refused with no visible reason")
+        if sorted(modes["stale"]) != ([modes["only"]] if modes.get("only") is not None else []):
+            failures.append(f"with 立直 armed but unavailable the client lights {modes['stale']} "
+                            f"instead of the one plain discard {modes.get('only')}")
+        if modes["sentWhileUnlit"]:
+            failures.append(f"{modes['sentWhileUnlit']} action(s) were sent by clicking a tile "
+                            "that was not playable")
+        if modes["drawn"] is not None and sorted(modes["locked"]) != [modes["drawn"]]:
+            failures.append(f"after declaring 立直 the client lights {modes['locked']} but only "
+                            f"the drawn tile {modes['drawn']} may be played")
         if riichi_banners == 0:
             failures.append("no 立直 announcement was ever shown")
         if declared_rounds == 0:
@@ -1652,6 +1771,29 @@ async def check_meld():
                 f"slot={m['rot'] + 1} down={m['down']} shown={m.get('shown')} {m['label']}"
                 for m in found[:4]))
             failures.extend(meld_live_failures(found))
+            # Every set the view knows about must be in the DOM: a meld that was
+            # never rendered is a set the player cannot see at all, which is how
+            # the first 碰 went missing until the next one (the count of hidden
+            # melds was off by one after a plan was replaced).
+            counts = json.loads(await b.ev("""JSON.stringify((() => {
+                const me = state.view.players[state.human];
+                const seats = [0, 1, 2, 3].map(s => ({
+                    seat: s,
+                    view: (state.view.players[s].melds || []).length,
+                    dom: s === state.human
+                        ? document.querySelectorAll('#melds-self .meld').length
+                        : (() => {
+                            const slot = document.getElementById(
+                              ['seat-self','seat-right','seat-across','seat-left'][relativeSeat(s)]);
+                            return slot ? slot.querySelectorAll('.melds .meld').length : 0;
+                          })()
+                }));
+                return {seats, selfMelds: (me.melds || []).length};
+            })())"""))
+            for row in counts["seats"]:
+                if row["dom"] != row["view"]:
+                    failures.append(f"seat {row['seat']} has {row['view']} called sets but "
+                                    f"{row['dom']} are on the table")
         if b.problems:
             failures.append(f"{len(b.problems)} page exceptions (first: {b.problems[0]})")
         if b.console:

@@ -402,7 +402,11 @@ function handle(msg) {
         lastRoundKey = null;
         deltaScores = null;
         riichiMode = false;
-        for (const seat of [0, 1, 2, 3]) visibleDiscards[seat] = 0;
+        for (const seat of [0, 1, 2, 3]) {
+          visibleDiscards[seat] = 0;
+          visibleMelds[seat] = 0;
+        }
+        firstLook = true;
         logs = [];
         const logEl = document.getElementById("log");
         if (logEl) logEl.innerHTML = "";
@@ -453,6 +457,8 @@ let lastScores = null;
 let lastRoundKey = null;
 let lastSeed = null;
 let deltaTimer = null;
+/// True until the first view of a session has been drawn; see `render`.
+let firstLook = true;
 
 function render() {
   if (!state) return;
@@ -462,21 +468,26 @@ function render() {
   // render (the score-delta timer, a panel closing) must not play it twice.
   const batch = lastBatch;
   lastBatch = [];
-  // Which melds in this view are new, per seat, so a call stays hidden until its
-  // own beat. A 加杠 *replaces* its 碰 rather than adding one, so it is not
-  // counted and the new shape shows a beat early — the rarest form, and the seat
-  // it came from never moves, so nothing is misread.
-  for (const e of batch) {
-    const m = e.Meld || (e.Kan && String(e.Kan.meld.kind) === "Ankan" ? e.Kan : null);
-    if (m) pendingMelds[m.seat] = (pendingMelds[m.seat] || 0) + 1;
-  }
   const roundKey = view.round_wind + ":" + view.round_number + ":" + view.honba;
   // A new hand starts from a clean table, and the pond clock has to follow it
   // down: left over from the hand that just ended it covers the new hand's whole
   // opening, so its first discards (often three of them, plus the player's own
   // first decision) would appear in a single frame instead of a beat apart.
   if (lastRoundKey !== null && roundKey !== lastRoundKey) {
-    for (const seat of [0, 1, 2, 3]) visibleDiscards[seat] = 0;
+    for (const seat of [0, 1, 2, 3]) {
+      visibleDiscards[seat] = 0;
+      visibleMelds[seat] = 0;
+    }
+  } else if (firstLook) {
+    // The first view of a session: whatever is already on the table is shown as
+    // it stands — a reconnect deals a fresh match, so this is normally empty, but
+    // a mid-hand first view must not be staged from the beginning.
+    for (let seat = 0; seat < 4; seat++) {
+      const p = view.players[seat];
+      visibleDiscards[seat] = (p.discards || []).length;
+      visibleMelds[seat] = (p.melds || []).length;
+    }
+    firstLook = false;
   }
   if (lastRoundKey !== null && roundKey !== lastRoundKey && lastScores) {
     // A round just ended: keep the deltas on screen for a few seconds. The
@@ -546,7 +557,7 @@ function render() {
   // Everything that answers this batch waits for the batch to be on screen. The
   // hold has to start *before* the hand is drawn, because the hand decides
   // whether its tiles are clickable and whether the drawn tile is visible at all.
-  const { plan, lastAt } = planBatch(batch, hiddenDiscards());
+  const { plan, lastAt } = planBatch(batch, hiddenDiscards(), hiddenMelds());
   if (lastAt > 0) holdControls(lastAt + 60);
   renderHand(view, human);
   if (lastAt > 0) {
@@ -693,7 +704,7 @@ function renderOpponent(slot, p, view, rel) {
   const vertical = rel === 1 || rel === 3;
   slot.appendChild(backRow(p.hand_count, { vertical }));
   if (p.melds && p.melds.length) {
-    slot.appendChild(meldRow(p.melds, true, p.seat, pendingMelds[p.seat]));
+    slot.appendChild(meldRow(p.melds, true, p.seat));
   }
 }
 
@@ -889,16 +900,16 @@ function meldGroup(meld, seat, small) {
   return g;
 }
 
-/// `hidden` is how many of the *last* sets are too new to show yet: a call is an
-/// action like any other and gets its own beat, so the set that a batch just made
-/// stays out of sight until the playback reaches it.
-function meldRow(melds, small, seat, hidden) {
+/// A called set is an action like any other and gets its own beat, so the set that
+/// a batch just made stays out of sight until the playback reaches it: everything
+/// from `visibleMelds[seat]` on is laid out but hidden.
+function meldRow(melds, small, seat) {
   const wrap = document.createElement("div");
   wrap.className = "melds";
-  const first = melds.length - Math.min(hidden || 0, melds.length);
+  const shown = visibleMelds[seat] || 0;
   melds.forEach((m, i) => {
     const g = meldGroup(m, seat, small);
-    if (i >= first) g.classList.add("queued");
+    if (i >= shown) g.classList.add("queued");
     wrap.appendChild(g);
   });
   return wrap;
@@ -1005,12 +1016,18 @@ function pace() {
   return PACE_STEPS[paceIndex].ms;
 }
 
-/// Per seat, how many of its called sets are still waiting for their beat. A
-/// call is shown on its own beat instead of the instant the state arrives, and
-/// the count is *drained by the reveal* rather than reset per batch: every render
-/// re-derives which melds to hide from it, so a count that was never cleared
-/// would keep the newest set of that seat hidden for the rest of the hand.
-const pendingMelds = { 0: 0, 1: 0, 2: 0, 3: 0 };
+/// Per seat, how many of its called sets are on screen.
+///
+/// A call is shown on its own beat instead of the instant the state arrives, so
+/// this is the meld side of `visibleDiscards` and is a *count of what is shown*,
+/// never a queue of what is owed: every render hides `melds[i]` for
+/// `i >= visibleMelds[seat]` and the reveal step raises the count. A count that
+/// counted *pending* reveals instead was wrong the moment a plan was replaced
+/// before it ran — the reveal step was cancelled, the count never came down, and
+/// that seat's newest set stayed hidden for the rest of the hand (one call late,
+/// which is exactly how it was reported: "the first 碰 never appeared, and after
+/// the second one only the first showed").
+const visibleMelds = { 0: 0, 1: 0, 2: 0, 3: 0 };
 
 /// The seat box on this player's screen, by relative position.
 const SEAT_SLOT_IDS = ["seat-self", "seat-right", "seat-across", "seat-left"];
@@ -1021,16 +1038,32 @@ function meldBoxForSeat(seat) {
   return slot ? slot.querySelector(".melds") : null;
 }
 
-/// Show the oldest meld this seat is still hiding, on the beat its call happened.
-function revealMeld(seat) {
+/// Show the next called set of this seat, on the beat its call happened.
+function revealMeld(seat, index) {
+  const melds = (state && state.view && state.view.players[seat].melds) || [];
+  const at = typeof index === "number" ? index : (visibleMelds[seat] || 0);
+  if (at >= melds.length) return;
+  visibleMelds[seat] = at + 1;
   const box = meldBoxForSeat(seat);
   if (!box) return;
-  const g = box.querySelector(".meld.queued");
+  const groups = [...box.querySelectorAll(".meld")];
+  const g = groups[at];
   if (!g) return;
   g.classList.remove("queued");
   g.classList.add("landing");
   setTimeout(() => g.classList.remove("landing"), 260);
-  pendingMelds[seat] = Math.max(0, (pendingMelds[seat] || 0) - 1);
+}
+
+/// The called sets each seat is still hiding, in order: the meld side of
+/// `hiddenDiscards`, derived from the view so a replaced plan loses nothing.
+function hiddenMelds() {
+  const out = [];
+  if (!state || !state.view) return out;
+  for (let seat = 0; seat < 4; seat++) {
+    const melds = state.view.players[seat].melds || [];
+    for (let i = visibleMelds[seat] || 0; i < melds.length; i++) out.push({ seat, index: i });
+  }
+  return out;
 }
 
 /// Work out how a batch plays out, without touching the DOM.
@@ -1067,7 +1100,7 @@ let lastBeatAt = 0;
 /// schedule as well.
 let planTimers = [];
 
-function planBatch(batch, hidden) {
+function planBatch(batch, hidden, hiddenM) {
   const step = pace();
   const now = performance.now();
   // Start no earlier than one beat after the last step that actually *fired*, so
@@ -1082,6 +1115,7 @@ function planBatch(batch, hidden) {
     ? batch
     : ((state && state.view && state.view.events) || []);
   const queue = hidden.slice();
+  const mqueue = hiddenM.slice();
   const plan = [];
   let clock = 0;
   const add = (at, what, seat, kind, index) => {
@@ -1100,6 +1134,20 @@ function planBatch(batch, hidden) {
     add(clock, "discard", p.seat, undefined, p.index);
     clock += step;
     queue.splice(queue.indexOf(p), 1);
+  }
+
+  // A called set the batch says nothing about is the tail of a replaced plan and
+  // happened before everything in it: same rule as the discards above.
+  for (const m of mqueue.slice()) {
+    if (events.some((e) => {
+      const ev = e.Meld || (e.Kan && String(e.Kan.meld.kind) === "Ankan" ? e.Kan : null);
+      return ev && ev.seat === m.seat;
+    })) {
+      continue;
+    }
+    add(clock, "call", m.seat, undefined, m.index);
+    clock += step;
+    mqueue.splice(mqueue.indexOf(m), 1);
   }
 
   for (const e of events) {
@@ -1123,7 +1171,13 @@ function planBatch(batch, hidden) {
       const m = e.Meld || e.Kan;
       add(clock, "shout", m.seat, String(m.meld ? m.meld.kind : m.kind));
       clock += step;
-      add(clock, "call", m.seat);
+      // 加槓 *replaces* its 碰, so it reveals no new set: the seat's hidden list
+      // decides, not the event. Nothing to reveal means the shout stands alone.
+      const mi = mqueue.findIndex((q) => q.seat === m.seat);
+      if (mi >= 0) {
+        add(clock, "call", m.seat, undefined, mqueue[mi].index);
+        mqueue.splice(mi, 1);
+      }
       clock += step;
     } else if (e.Win) {
       const ron = e.Win.from !== null && e.Win.from !== undefined;
@@ -1152,6 +1206,10 @@ function planBatch(batch, hidden) {
   // to be revealed, on its own beats, rather than dropped or revealed together.
   for (const p of queue) {
     add(clock, "discard", p.seat, undefined, p.index);
+    clock += step;
+  }
+  for (const m of mqueue) {
+    add(clock, "call", m.seat, undefined, m.index);
     clock += step;
   }
   // The beats are read off the finished plan, because the 立直 shift above moves
@@ -1189,7 +1247,7 @@ function runPlan(plan) {
 
 function runStep(s) {
   if (s.what === "discard") revealDiscard(s.seat, s.index);
-  else if (s.what === "call") revealMeld(s.seat);
+  else if (s.what === "call") revealMeld(s.seat, s.index);
   else if (s.what === "shout") announceCall(s.seat, s.kind);
   else if (s.what === "headline") showHeadline(s.kind);
   // The table advanced here, *now* — not when the step was planned. A step that
@@ -1291,10 +1349,18 @@ function renderHand(view, human) {
   // Called sets are gone from `me.hand`, so without this the tiles a call took
   // would simply vanish from the board.
   if (me.melds && me.melds.length) {
-    meldsEl.appendChild(meldRow(me.melds, true, human, pendingMelds[human]));
+    meldsEl.appendChild(meldRow(me.melds, true, human));
   }
 
   const decision = state.decision;
+  // A 立直 armed for one decision must not survive into one that cannot riichi:
+  // the hand is then drawn with no tile playable at all, every click is refused
+  // with "这张牌不能立直", and the toggle that would explain why is not even drawn.
+  // (Found while pinning the rule the player reported as "sometimes not enforced".)
+  if (riichiMode && decision
+      && !(decision.actions || []).some((a) => a.Discard && a.Discard.riichi)) {
+    riichiMode = false;
+  }
   // `controlsHeld` covers the paced hold too: while the table is still playing
   // this batch's discards out, the hand must not take a click any more than the
   // action bar takes one — the player is watching the other seats, and a discard
@@ -1324,6 +1390,14 @@ function renderHand(view, human) {
   if (awaitingTurn) drawn = null;
 
   const clickTile = (tile) => () => {
+    // The table is still playing the previous batch out, or a settlement is on
+    // screen: the hand is drawn unclickable, but the handler is still attached (it
+    // is what explains *why* a tile cannot be played), so without this a click
+    // sends an action for a table the player has not finished watching.
+    if (controlsHeld && !boardHold) {
+      toast("等这一巡打完再打牌");
+      return;
+    }
     const act = findDiscardAction(tile, riichiMode);
     if (!act) {
       toast(locked
@@ -1778,7 +1852,9 @@ function describeEvent(e) {
     // Name which of the three kans it was. "杠 5m" leaves the player guessing
     // whether a concealed quad just went down, and the three mean different
     // things (喰い下がり, the 搶槓 window, where the dora comes from).
-    return `${who(k.seat)} ${meldKindName(k.meld.kind)} ${friendlyTileName(k.meld.tiles[0])}`
+    const named = (k.meld.called !== null && k.meld.called !== undefined)
+      ? k.meld.called : k.meld.tiles[0];
+    return `${who(k.seat)} ${meldKindName(k.meld.kind)} ${friendlyTileName(named)}`
       + (k.dora_indicator !== null && k.dora_indicator !== undefined
         ? `（新宝牌指示牌 ${tileName(k.dora_indicator)}）` : "");
   }

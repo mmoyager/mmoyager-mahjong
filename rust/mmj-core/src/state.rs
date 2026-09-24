@@ -1230,7 +1230,13 @@ impl Table {
                     self.submitted[seat as usize] = Some(Action::Pass);
                     self.phase = Phase::ChankanWindow {
                         from: seat,
-                        tile: meld.tiles[3],
+                        // The tile that was *added*, which is `called`. `tiles[3]`
+                        // is whichever copy sorted last, and `Meld::kan` sorts:
+                        // adding the red five to a pon of plain ones leaves
+                        // `tiles[3]` a plain five, so robbing that kan would hand
+                        // the robber a tile worth one dora less than the one on
+                        // the table — and the log would name the wrong tile.
+                        tile: meld.called,
                         awaiting,
                     };
                     self.pump();
@@ -1887,8 +1893,16 @@ impl Table {
         let mut tenpai = [false; 4];
         for s in 0..4usize {
             let p = &self.players[s];
-            // 形式聴牌: shape only, regardless of how many copies are visible.
-            tenpai[s] = !tenpai_kinds(&p.hand, p.melds.len() as u8).is_empty();
+            // 形式聴牌 means "no yaku needed", not "ignore the copies". Whether a
+            // hand that already holds all four of its only wait counts as tenpai
+            // is the one place 天鳳 and WRC disagree (docs/RULES.md §18.10), and
+            // the ruling here is 天鳳: the wait counts *unless* the concealed hand
+            // holds all four — which is what `winning_kinds` does. `tenpai_kinds`
+            // (shape only) was used here while the 流し満貫 branch above already
+            // used `winning_kinds`, so the two ways of ending a hand disagreed
+            // about the same hand, and the noten penalty was paid by the wrong
+            // players for a 5枚目待ち shape.
+            tenpai[s] = !winning_kinds(&p.hand, p.melds.len() as u8).is_empty();
         }
         let count = tenpai.iter().filter(|&&x| x).count() as i32;
         let mut deltas = [0i32; 4];
@@ -2770,6 +2784,162 @@ mod tests {
         assert!(t.players[1].drawn_is_rinshan);
         assert_eq!(t.wall.remaining(), before - 1); // the rinshan tile
         assert_eq!(t.phase, Phase::Turn { seat: 1 });
+    }
+
+    /// 立直 may be declared on a discard exactly when the 13 tiles that remain are
+    /// tenpai. The expectation here is computed from `is_agari` directly, with the
+    /// §18.10 rule spelled out, rather than by calling the same helper the engine
+    /// calls — otherwise the test would only prove the code equals itself.
+    #[test]
+    fn riichi_is_offered_exactly_for_discards_that_keep_the_wait() {
+        let tenpai_of = |rest: &Counts| -> bool {
+            let mut c = *rest;
+            for k in 0..NUM_KINDS {
+                if rest[k] >= 4 {
+                    continue; // §18.10: a fifth copy cannot come from your own hand
+                }
+                c[k] += 1;
+                let win = is_agari(&c, 0);
+                c[k] -= 1;
+                if win {
+                    return true;
+                }
+            }
+            false
+        };
+
+        let mut hands = 0usize;
+        let mut offered = 0usize;
+        let mut nowhere = 0usize;
+        for seed in 0..3000u64 {
+            let mut t = table(seed);
+            // A random 14-tile hand, so the shapes are arbitrary rather than the
+            // tidy ones a hand-written spec would produce.
+            let mut tiles: Vec<Tile> = Vec::with_capacity(14);
+            while tiles.len() < 14 {
+                match t.wall.draw() {
+                    Some(x) => tiles.push(x),
+                    None => break,
+                }
+            }
+            if tiles.len() < 14 {
+                continue;
+            }
+            let mut counts = [0u8; NUM_KINDS];
+            for &x in &tiles {
+                counts[kind_of(x) as usize] += 1;
+            }
+            let p = &mut t.players[0];
+            p.hand = counts;
+            p.hand_tiles = tiles;
+            p.hand_tiles.sort_unstable();
+            p.drawn = p.hand_tiles.last().copied();
+            t.phase = Phase::Turn { seat: 0 };
+            t.refresh_decisions();
+            let d = t.decisions().iter().find(|d| d.seat == 0).cloned();
+            let Some(d) = d else { continue };
+            if !d.actions.iter().any(|a| a.is_discard()) {
+                continue;
+            }
+            hands += 1;
+
+            for k in 0..NUM_KINDS {
+                if counts[k] == 0 {
+                    continue;
+                }
+                let mut rest = counts;
+                rest[k] -= 1;
+                let want = tenpai_of(&rest);
+                let got = d
+                    .actions
+                    .iter()
+                    .any(|a| matches!(a, Action::Discard { tile, riichi: true } if kind_of(*tile) as usize == k));
+                assert_eq!(
+                    got, want,
+                    "seed {}: discarding {} must {} be offered as 立直 (hand {:?})",
+                    seed, k, if want { "" } else { "not" }, counts
+                );
+                if got {
+                    offered += 1;
+                }
+                if want {
+                    nowhere += 1;
+                }
+            }
+        }
+        assert!(hands > 1000, "the test needs hands to look at, saw {}", hands);
+        assert!(offered > 0, "no hand in the sample could declare 立直");
+        assert_eq!(offered, nowhere, "every tenpai-preserving discard is offered");
+    }
+
+    /// 搶槓 must offer the tile that was actually added. `Meld::kan` sorts the
+    /// four copies, so a 加槓 of the *red* five onto a ポン of plain ones leaves
+    /// the red one first: reading `tiles[3]` would rob a plain five instead.
+    #[test]
+    fn robbing_a_kakan_offers_the_tile_that_was_added() {
+        let mut t = table(9);
+        // A pon of plain 5m (copies 1..3) from seat 0, and the red five in hand.
+        t.players[1]
+            .melds
+            .push(Meld::pon([tile_of(4, 1), tile_of(4, 2), tile_of(4, 3)], tile_of(4, 1), 0));
+        // `set_hand` gives the first copy of a kind, which for a five is the red one.
+        set_hand(&mut t, 1, "5m123p456p789p1z");
+        // A kanchan wait on 5m with a 白 triplet, so the ron has a yaku. The rest
+        // of the hand holds no red five, so the 赤宝牌 count proves which tile was
+        // robbed: one means the red five, zero the plain one.
+        set_hand(&mut t, 3, "46m234p789p555z22s");
+        assert!(
+            t.players[1].hand_tiles.iter().any(|&x| is_aka_tile(x)),
+            "the red five is the one that gets added"
+        );
+
+        t.phase = Phase::Turn { seat: 1 };
+        t.refresh_decisions();
+        let kakan = t
+            .decisions()
+            .iter()
+            .find(|d| d.seat == 1)
+            .expect("seat 1 has a decision")
+            .actions
+            .iter()
+            .find(|a| matches!(a, Action::Meld { meld } if meld.kind == MeldKind::Kakan))
+            .copied()
+            .expect("kakan is offered");
+        let added = match kakan {
+            Action::Meld { meld } => meld.called,
+            _ => unreachable!(),
+        };
+        assert!(is_aka_tile(added), "the added tile is the red five");
+
+        t.submit(1, kakan).unwrap();
+        match &t.phase {
+            Phase::ChankanWindow { tile, .. } => {
+                assert_eq!(*tile, added, "the robbable tile is the one that was added");
+                assert!(is_aka_tile(*tile), "and it is still the red five");
+            }
+            other => panic!("expected a 搶槓 window, got {:?}", other),
+        }
+
+        // And when it is robbed, the winner is paid for the tile on the table.
+        // The window only resolves once every seat it is waiting on has answered.
+        for seat in [0u8, 2, 3] {
+            let action = if seat == 3 { Action::Ron } else { Action::Pass };
+            t.submit(seat, action).unwrap();
+        }
+        let win = t
+            .history
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                Event::Win { tile, score, .. } => Some((*tile, score.clone())),
+                _ => None,
+            })
+            .expect("a win event");
+        assert_eq!(win.0, added, "the win names the tile that was robbed");
+        assert_eq!(
+            win.1.aka_han, 1,
+            "the red five counts as 赤宝牌 (a plain five would count zero)"
+        );
     }
 
     /// A 加槓 replaces its ポン, and `from` cannot carry the ポン's source (the
