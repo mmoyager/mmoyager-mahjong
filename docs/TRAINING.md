@@ -3941,3 +3941,87 @@ opacity 不为 0）。这条断言当时的写法是"立即判可见"，于是�
 而那几拍之后仍然隐藏，才是真 bug。
 
 至此检查模式共 **15 个**：`fit / play / riichi / panels / settle / protocol / multi / seats / match / tiles / paint / pace / meld / stage`。
+
+## 63. 第 53 轮：整批牌"闪一下再消失"，以及出牌动画重做
+
+用户的第二份反馈：
+
+> 每次我打完牌后，其他三家要打的牌会一起闪一下然后一起消失，然后每家依次再出现，
+> 而且这个出牌的动画效果我觉得需要巨大优化一下。
+
+### 63.1 "闪一下再消失"是 CSS 优先级造成的，不是时序
+
+根因一句话：**CSS 动画的优先级高于普通声明**。新牌河牌在创建时带着 `.fresh`（"最新一张"），
+`.tile.fresh` 的 `tile-drop` 关键帧把 `opacity` 从 **0.35 动画到 1**——于是它**压过了**
+`.queued { opacity: 0 }`：每张新牌都先亮 160ms、动画一结束又掉回 0（不可见），
+然后按节拍一张张"重新出现"。用户看到的"一起闪一下然后一起消失"，就是整批新牌同时跑了这段动画。
+
+两处修法，双保险：
+
+1. **新牌不再带任何动画类**：`renderPond` 只负责"摆好 + 藏起来"，动效一律归 `revealDiscard`
+   （真正到点时才发生）。顺带修掉了"每次重绘都重播一次落牌动画"。
+2. **`--tg-op` 贯穿所有关键帧**：`.queued` 现在是 `--tg-op: 0; opacity: 0`，而每个关键帧的透明度
+   都写成 `var(--tg-op, 1)`（含中途关键帧）。这样即使将来有人给未到点的牌加了动画，它也**动画到不可见**，
+   而不会闪。
+
+### 63.2 出牌动画重做：从"手"飞到"牌河"
+
+原来只有 `translateY(-10px) scale(1.18)` 的原地放大——它只说明"这里多了一张牌"，
+不说明**是谁打的**、也不说明**哪张是新的**。现在每次出牌都是**一次投掷**：
+
+* `flyDiscard()` 量出**出牌那家的来向**（自家取 `#hand-area` 中心，对手取座位盒中心），
+  与目标格中心相减得到屏幕向量；
+* 每个牌河都被旋转过（0/90/180/270°）以朝向它的主人，所以向量**反向旋转到牌河自己的坐标系**再作为
+  `--fly-x/--fly-y`——否则四家里有三家的牌会从错误的方向飞进来；
+* 关键帧：从 `translate(偏移) scale(1.34) rotate(-9°)`、透明 0 起，25% 处到静止透明度，
+  75% 处 `scale(1.05) rotate(0.6°)`，最后 `transform: none`；时长 **260ms**，
+  `cubic-bezier(0.24, 0.7, 0.34, 1)`（强 ease-out）。上限 260px（`FLY_MAX_PX`）：
+  座位和它的牌河永远是邻居，上限只是防止异常窗口尺寸把牌甩到别人牌河上，真触发时把多余距离折成更大的倾角。
+* 自家摸到的牌也加了"升起"动效（`draw-in`，220ms），但**只在真的摸牌那一次**播：
+  `renderHand` 每次状态更新、以及放开控制时都会重画，所以用一个 `shownDrawn` 记住当前显示的那张，
+  同一张牌的重绘不再重播（否则每次重绘都会动一下）。
+
+### 63.3 自查抓到的两个新问题
+
+1. **同一批事件里"立直 + 荣和"会把和牌喊声提前一拍**。`planBatch` 为每个 Riichi/Win/Ryuukyoku
+   各生成一个 `headline` 步骤，而 `showHeadline()` 只看"有没有待播的喊声"——于是**立直那一步**
+   就把（优先级更高的）和牌喊声与结算面板消费掉了，比那张铳牌还早。修法：给步骤打上事件种类
+   （`win` / `riichi` / `draw`），`showHeadline(kind)` 只消费匹配的那一个。
+   这是 `stage` 检查那行 `shouts=0, panels=1` 的异常数字引出来的。
+2. **检查探针自己在墙上贴了一张牌**：新加的"未到点的牌不许被画出来"自检会临时造一个
+   `.pond-grid .tile.queued.flying` 量透明度，而 20ms 采样器把这张**探针牌**算成了"还有牌没落地"，
+   于是误报了两次"摸到的牌提前出现"。修法：采样器与喊声探针都只看 `#ring .pond-grid .tile`
+   （四个真牌河），不看临时容器。
+
+### 63.4 `stage` 检查新增的三条断言
+
+* **未到点的牌不许被画出**：20ms 采样，逐张量 `.queued` 牌的 `computedStyle.opacity`，
+  任何一张 > 0.05 即失败（就是 63.1 那个 bug 的直接回归测试）。
+* **自证有力**：页面加载时自己造一张 `.queued.flying` 的牌、跑动画、90ms 后量它——
+  必须在动画中途仍不可见。旧的关键帧（0.35→1）会让这条自检失败，所以它测的是真东西。
+* **每张弃牌都必须"飞"进来**：`revealDiscard` 之后立刻量这张牌的 `--fly-x/--fly-y` 与 `flying` 类，
+  没有偏移就说明它只是"出现在格子里"。三次运行分别测得 **92/92、65/65、84/84** 张牌都带位移飞入。
+
+### 63.5 出牌动效对着公开规范核了一遍
+
+用户要求"动画效果巨大优化"，所以除了自己看，也把时长/曲线/落地对着公开规范核了一遍（来源如下）：
+
+| 结论 | 依据 |
+|---|---|
+| **260ms 在各家区间内** | Material 的 medium token 250/300ms、Fluent 的 gentle/slow 250/300ms、Windows 的 250/333ms、NN/g 的"大改动 200–300ms"（[Windows Motion](https://learn.microsoft.com/en-us/windows/apps/design/signature-experiences/motion)、[Carbon motion](https://raw.githubusercontent.com/carbon-design-system/carbon-website/main/src/pages/elements/motion/overview.mdx)、[NN/g animation duration](https://www.nngroup.com/articles/animation-duration/)） |
+| 这条曲线是 **point-to-point**（已存在物体换位置），**不是 entrance** | Windows 的用途对照表把两者分开：entrance 用 `cubic-bezier(0,0,0,1)`，point-to-point 用另一条。所以不该拿 Material 的 entrance 曲线来衡量 |
+| **落点不要弹** | Carbon 明确写"不要用暗示弹跳/拉伸/急停的曲线"；Windows 另有一套弹性 entrance——两者冲突，牌河里的牌晃动等于在**谎报**它落在哪，所以不弹 |
+| **只动 `transform` 与 `opacity`** | 只有这两个属性在合成层里、不触发重绘（[MDN](https://developer.mozilla.org/en-US/docs/Web/Performance/Guides/Animation_performance_and_frame_rate)） |
+| **透明度要在中段之前就到静止值** | Windows 强调 exit 必须配 fade、Apple 建议"要移动物体就先淡出再淡入"；所以淡入放在 25%，而不是结尾（结尾的淡入会被读成"又发生了一件事"） |
+| **不要有长长的收尾** | 260ms 曲线在 200ms 时已走完 99%；检查里实测"200ms 时最差离落点 **0.1px**" |
+| **槽位先占好（`opacity:0` + 保留布局）** | 布局位移规范明确把 `opacity:0` 的节点与"只有 transform 变化"排除在累计位移之外（[Layout Instability](https://wicg.github.io/layout-instability/)） |
+| **必须可关闭** | 这段动效不属于"必要动效"，[WCAG 2.2 SC 2.3.3](https://www.w3.org/WAI/WCAG22/Understanding/animation-from-interactions.html) 要求可抑制；我们已有「动画」开关 + `prefers-reduced-motion` |
+| 麻将客户端里**没有**官方公开的"弃牌位移"规格 | 雀魂/立直麻将 City 查不到一手来源（官方页是 JS 渲染、没有开发者博客），天鳳只文档化了"打牌后按比例停顿数秒"，SEGA MJ 文档化的只有**打牌切镜（カットイン）与舍牌排列显示**且可关（[MJ 演出设置](https://www.sega-mj.com/arcade/howto/custom/effect.html)）。所以数字都是我们自己的判断，不是抄来的 |
+
+据此改了两处：起始缩放 **1.34 → 1.25**（研究指出 1.2–1.4 这个区间没有任何一手来源，属于我的判断，
+调小一点避免盖住邻牌），以及把曲线/时长的**用途与来源写进注释**（point-to-point 而非 entrance）。
+另外研究建议的"突发时 20ms 错开、整段 ≤500ms"对我们不适用——我们的弃牌本来就相隔一个节拍（默认 1s），
+不存在突发；"同一张牌不重启动画（保留速度）"也没做：重绘会替换元素，代价是要把飞行状态提到元素之外，
+而最坏情况只是"飞行被打断、牌直接落在槽里"，在 2D 桌面上不值得这个复杂度（已写进注释）。
+
+至此仍是 **15 个**检查模式，但 `stage` 现在同时覆盖"闪"、"飞"、"落点"这三件事。

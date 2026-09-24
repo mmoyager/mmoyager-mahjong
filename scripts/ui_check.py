@@ -1667,7 +1667,7 @@ async def check_meld():
 STAGE_HOOKS = r"""
 (() => {
   if (window.__stage) return 'already';
-  const S = {events: [], violations: [], marks: {}, plans: []};
+  const S = {events: [], violations: [], marks: {}, plans: [], landings: []};
   window.__stage = S;
   const now = () => Math.round(performance.now());
   const queuedPerSeat = () => [0, 1, 2, 3].map(s => {
@@ -1678,22 +1678,47 @@ STAGE_HOOKS = r"""
     const orig = window[name];
     if (typeof orig !== 'function') return;
     window[name] = function (arg) {
+      // For a shout the staged headline has to be read *before* the call: showing
+      // it is what consumes it.
+      const staged = (name === 'showHeadline' && typeof pendingHeadline !== 'undefined')
+        ? pendingHeadline : null;
+      const r = orig.apply(this, arguments);
       if (name === 'revealDiscard') {
-        S.events.push({t: now(), what: 'discard', seat: arg});
+        // Sample *after* the reveal — the flight starts inside it. Is the tile
+        // flying, and does its offset start away from the slot it lands in?
+        const pond = document.getElementById(pondForRel(relativeSeat(arg)));
+        const tiles = pond ? [...pond.querySelectorAll('.pond-grid .tile')] : [];
+        const el = tiles.filter(t => !t.classList.contains('queued')).pop();
+        let fly = null;
+        if (el) {
+          const cs = getComputedStyle(el);
+          fly = {cls: el.classList.contains('flying'),
+                 anim: cs.animationName,
+                 x: parseFloat(cs.getPropertyValue('--fly-x')) || 0,
+                 y: parseFloat(cs.getPropertyValue('--fly-y')) || 0};
+          // And where it is at 200 ms of a 260 ms flight: a long tail is motion
+          // the eye has already finished reading, and on a table that plays a beat
+          // per action it also eats into the next beat.
+          setTimeout(() => {
+            if (!el.isConnected || !el.classList.contains('flying')) return;
+            const m = new DOMMatrix(getComputedStyle(el).transform);
+            S.landings.push({t: now(), dx: Math.round(m.e * 10) / 10,
+                             dy: Math.round(m.f * 10) / 10});
+          }, 200);
+        }
+        S.events.push({t: now(), what: 'discard', seat: arg, fly});
       } else if (name === 'revealMeld') {
         S.events.push({t: now(), what: 'call', seat: arg});
       } else if (name === 'showHeadline') {
         // Read what is about to be shouted and what the table still owes the
         // player: a shout that arrives with discards still in the queue is a
         // shout about a tile nobody can see yet.
-        const h = (typeof pendingHeadline !== 'undefined') ? pendingHeadline : null;
         S.events.push({t: now(), what: 'headline',
-                       text: h && h.shout ? h.shout.text : null,
-                       seat: h && h.shout ? h.shout.seat : null,
-                       queued: document.querySelectorAll('.pond-grid .tile.queued').length,
+                       text: staged && staged.shout ? staged.shout.text : null,
+                       seat: staged && staged.shout ? staged.shout.seat : null,
+                       queued: document.querySelectorAll('#ring .pond-grid .tile.queued').length,
                        queuedPerSeat: queuedPerSeat()});
       }
-      const r = orig.apply(this, arguments);
       S.marks[name] = (S.marks[name] || 0) + 1;
       return r;
     };
@@ -1739,13 +1764,46 @@ STAGE_HOOKS = r"""
     }
   }).observe(banner, {attributes: true, attributeFilter: ['class']});
 
+  // Self-test for the flash rule, the same way the meld probe proves its own
+  // rules: build a queued tile, run the landing animation on it, and measure it
+  // mid-animation. A queued tile must stay invisible; if a future edit animates
+  // opacity to 1 regardless of `--tg-op`, this reports it.
+  (() => {
+    const host = document.createElement('div');
+    host.className = 'pond-grid';
+    host.style.cssText = 'position:fixed;left:-9999px;top:0';
+    const t = tileEl(4, {small: true, extra: 'queued flying'});
+    t.style.setProperty('--fly-x', '40px');
+    t.style.setProperty('--fly-y', '-30px');
+    host.appendChild(t);
+    document.body.appendChild(host);
+    S.selftest = {queuedWhileAnimated: null, animatedOpacity: null};
+    setTimeout(() => {
+      const cs = getComputedStyle(t);
+      S.selftest.queuedWhileAnimated = Math.round(parseFloat(cs.opacity) * 100) / 100;
+      S.selftest.animatedOpacity = cs.opacity;
+      host.remove();
+    }, 90);
+  })();
+
   // Sampling inside the page: is the player's own drawn tile on screen while a
   // pond tile is still waiting its turn?
   S.timer = setInterval(() => {
     const drawn = !!document.querySelector('#hand .tile.drawn');
-    const queued = document.querySelectorAll('.pond-grid .tile.queued').length;
+    const queuedEls = [...document.querySelectorAll('#ring .pond-grid .tile.queued')];
+    const queued = queuedEls.length;
+    // A tile that has not been played yet must not be painted, *however* it is
+    // animated: a CSS animation outranks a plain `opacity: 0`, and that is exactly
+    // how the whole batch used to flash on screen for 160 ms and then vanish.
+    const flashing = queuedEls.filter(t => parseFloat(getComputedStyle(t).opacity) > 0.05);
+    if (flashing.length) {
+      S.violations.push({t: now(), what: 'flash', flashing: flashing.length, queued,
+                         hand: document.querySelectorAll('#hand .tile').length,
+                         bar: document.getElementById('action-bar').textContent});
+    }
     if (drawn && queued) {
-      S.violations.push({t: now(), drawn, queued,
+      S.violations.push({t: now(), drawn, queued, per: queuedPerSeat(),
+                         plans: S.plans.length,
         hand: document.querySelectorAll('#hand .tile').length,
         bar: document.getElementById('action-bar').textContent});
     }
@@ -1772,8 +1830,11 @@ def stage_failures(log, pace_ms, allow_gap):
             bad.append(f"discards landed {min(gaps)} ms apart (at least {allow_gap} wanted): "
                        "the table is playing at machine speed")
     for v in log.get("violations", [])[:3]:
+        if v.get("what") == "flash":
+            bad.append(f"a discard that has not been played yet was painted: {v}")
+            continue
         bad.append(f"the drawn tile was on screen while {v['queued']} discards were still "
-                   f"queued (hand={v['hand']} bar={v['bar']!r})")
+                   f"queued (hand={v['hand']} bar={v['bar']!r} perSeat={v.get('per')})")
     # A shout must not name a tile the player cannot see yet. Two cases:
     #   * a win or a draw ends the hand, so *nothing* may still be queued — the
     #     tile that won it has to be in the pond;
@@ -1807,9 +1868,28 @@ def stage_failures(log, pace_ms, allow_gap):
     for p in panels:
         if not [r for r in reveals if r["t"] <= p["t"]]:
             bad.append("a settlement panel opened before any discard had been staged")
-    summary = (f"{len(reveals)} discards staged, gaps={gaps[:8]}, "
+    flew = [r for r in reveals if (r.get("fly") or {}).get("cls")]
+    offsets = [(r.get("fly") or {}) for r in flew]
+    far = [o for o in offsets if abs(o.get("x", 0)) + abs(o.get("y", 0)) > 20]
+    if reveals and not flew:
+        bad.append("no discard flew in from the player who threw it: the tiles simply appear "
+                   "in the pond, which says neither who threw nor which tile is new")
+    elif len(far) < len(flew):
+        bad.append(f"{len(flew) - len(far)} of {len(flew)} discards flew in with no offset, "
+                   "so they appeared at their slot instead of coming from the hand")
+    landings = log.get("landings", [])
+    if landings:
+        worst = max(max(abs(l["dx"]), abs(l["dy"])) for l in landings)
+        if worst > 2:
+            bad.append(f"a flying tile was still {worst:.1f} px from its slot at 200 ms of a "
+                       "260 ms flight: the motion has a tail nobody is reading")
+    summary = (f"{len(reveals)} discards staged, {len(flew)} flew in "
+               f"({len(landings)} measured, worst landing offset "
+               f"{max((max(abs(l['dx']), abs(l['dy'])) for l in landings), default=0):.1f} px), "
+               f"gaps={gaps[:8]}, "
                f"shouts={shouted}, panels={len(panels)}, "
-               f"drawn-early={len(log.get('violations', []))}")
+               f"drawn-early={len(log.get('violations', []))}, "
+               f"flashes={sum(1 for v in log.get('violations', []) if v.get('what') == 'flash')}")
     return bad, summary
 
 
@@ -1853,10 +1933,27 @@ async def check_stage():
             "JSON.stringify({events: window.__stage.events.slice(-400),"
             " violations: window.__stage.violations, marks: window.__stage.marks,"
             " plans: window.__stage.plans.slice(-60),"
+            " selftest: window.__stage.selftest,"
+            " landings: window.__stage.landings,"
             " panels_seen: window.__stage.events.filter(e => e.what === 'panel').length})"))
+        st = log.get("selftest") or {}
+        drawn_then = st.get("queuedWhileAnimated")
+        if drawn_then is None:
+            failures.append("the flash self-test did not run")
+        elif drawn_then > 0.05:
+            failures.append(f"a queued tile is painted at opacity {drawn_then} — an animation "
+                            "is overriding `opacity: 0`, which is what made every new discard "
+                            "flash before its beat")
         for p in log.get("plans", []):
             if p.get("collide"):
                 print(f"  plan with two discards on one beat: {p}")
+        early = [v for v in log.get("violations", []) if v.get("what") != "flash"]
+        for v in early[:2]:
+            print(f"  drawn-early at {v['t']} (queued per seat {v.get('per')})")
+            for p in log.get("plans", []):
+                if abs(p["t"] - v["t"]) < 4000:
+                    print(f"    plan t={p['t']} lead={p.get('lead')} ats={p.get('ats')} "
+                          f"events={p['events']} pending={p['pending']} kinds={p['kinds']}")
         reveals = sorted([e for e in log.get("events", []) if e["what"] == "discard"],
                          key=lambda e: e["t"])
         short = [(x, y) for x, y in zip(reveals, reveals[1:])

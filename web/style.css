@@ -218,11 +218,6 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
 /* A tile turned face down: 暗槓's two outer tiles. It keeps the same body and
    loses only the printed face, because which tile it is stays public knowledge. */
 .tile.down { background-image: url("/tiles/Back.svg?v=2"); }
-.tile.fresh { animation: tile-drop 0.16s ease-out; }
-@keyframes tile-drop {
-  from { transform: translateY(-9px) scale(0.94); opacity: 0.35; }
-  to   { transform: translateY(0) scale(1); opacity: 1; }
-}
 
 /* opponents' tiles, face down */
 .backs { display: flex; gap: 1px; flex-wrap: wrap; justify-content: center; }
@@ -527,17 +522,58 @@ body.offline #action-bar button { opacity: 0.5; }
 /* ---------- pacing ---------- */
 /* A discard that is waiting its turn in the queue: present in the DOM (so the
    layout is final) but not yet visible. */
-.pond-grid .tile.queued { opacity: 0; }
+/* Invisible, and `--tg-op: 0` makes every landing animation end *at* that, so a
+   tile that has not been played yet cannot be flashed on screen by an animation
+   of its own. `.queued` must also beat the shading rules below, so it is declared
+   first and they all exclude themselves with `:not(.queued)`. */
+.pond-grid .tile.queued { --tg-op: 0; opacity: 0; }
 /* ツモ切り is marked by shade alone. `--tg-op` is the tile's resting opacity, so
    the landing animation can fade in *to* it instead of to 1 and then snapping
    down when the animation ends. A tile that has not been revealed yet stays
    invisible whatever shade it will have later, and a tile that was *called* keeps
    its own darker shade (`.called` above) rather than being lightened to this. */
 .pond-grid .tile.tsumogiri:not(.queued):not(.called) { --tg-op: 0.62; opacity: 0.62; }
-.pond-grid .tile.arriving { animation: tile-land 0.22s ease-out; }
-@keyframes tile-land {
-  from { transform: translateY(-10px) scale(1.18); opacity: calc(var(--tg-op, 1) * 0.15); }
-  to   { transform: translateY(0) scale(1); opacity: var(--tg-op, 1); }
+/* A discard flies in from the player who threw it. The offset and the tilt come
+   from `flyDiscard` in app.js, which measures that player's box and rotates the
+   vector into the pond's own frame (each pond is turned to face its owner, so a
+   raw screen-space offset would fly in from the wrong side for three of the four
+   seats).
+ *
+ * Duration and curve, against the published motion specs: 260 ms sits inside
+ * Material's medium tokens (250/300 ms), Fluent's gentle/slow (250/300 ms),
+ * Windows' 250/333 ms and NN/g's 200-300 ms for a substantial change. The curve is
+ * a *point-to-point* curve — an object that already exists relocating, which is
+ * Microsoft's "Existing Elements" role, not an entrance — and it is a strong
+ * ease-out: fast off the hand, settling into the slot, which is what says
+ * "thrown by that player".
+ *
+ * Only `transform` and `opacity` animate (both are composited, so the flight costs
+ * no repaint), opacity is at its resting value by 25% so a late fade cannot read
+ * as a second event, and there is *no* bounce past the landing slot: the specs
+ * disagree about overshoot (Windows ships an elastic entrance, Carbon says do not
+ * use curves that suggest bounce) and a tile that wobbles in a pond would be a
+ * lie about where it landed. The 1.25 start scale is a depth cue of my own, not
+ * from any spec, and it is small enough not to cover the neighbouring tile.
+ *
+ * https://learn.microsoft.com/en-us/windows/apps/design/signature-experiences/motion
+ * https://raw.githubusercontent.com/carbon-design-system/carbon-website/main/src/pages/elements/motion/overview.mdx
+ */
+.pond-grid .tile.flying { animation: tile-fly 0.26s cubic-bezier(0.24, 0.7, 0.34, 1); }
+@keyframes tile-fly {
+  from { opacity: 0;
+         transform: translate(var(--fly-x, 0px), var(--fly-y, 0px)) scale(1.25)
+                    rotate(var(--fly-r, -9deg)); }
+  25%  { opacity: var(--tg-op, 1); }
+  75%  { transform: translate(0px, 0px) scale(1.04) rotate(0.6deg); }
+  to   { opacity: var(--tg-op, 1); transform: none; }
+}
+/* The tile the player has just drawn rises into the hand. Without it the 14th
+   tile simply appears and the player has to recount the hand to find it. The
+   class is applied only on the draw itself — a repaint must not replay it. */
+#hand .tile.drawn.draw-in { animation: draw-in 0.22s ease-out; }
+@keyframes draw-in {
+  from { opacity: 0; transform: translateY(15px) scale(1.02); }
+  to   { opacity: 1; transform: none; }
 }
 /* The drawn tile pulses while the forced automatic discard is about to happen. */
 #hand-info.auto-note::before {
@@ -551,6 +587,6 @@ body.offline #action-bar button { opacity: 0.5; }
 /* Respect a user who asked for less motion: the game still works, it just does
    not animate. */
 @media (prefers-reduced-motion: reduce) {
-  .pond-grid .tile.arriving, #hand .tile.drawn.auto-target,
+  .pond-grid .tile.flying, #hand .tile.drawn.auto-target, #hand .tile.drawn.draw-in,
   .tile.callable, .melds .meld.landing { animation: none; }
 }

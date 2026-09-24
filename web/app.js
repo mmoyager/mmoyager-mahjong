@@ -942,8 +942,59 @@ function revealDiscard(seat) {
   const el = pond && [...pond.querySelectorAll(".pond-grid .tile")][visibleDiscards[seat] - 1];
   applyDiscardVisibility();
   if (!el) return;
-  el.classList.add("arriving");
-  setTimeout(() => el.classList.remove("arriving"), 220);
+  flyDiscard(el, seat);
+}
+
+/// How far a discard is allowed to travel, in pixels. A seat and its pond are
+/// always neighbours on this table, so the cap only exists so an odd window size
+/// cannot send a tile flying across two other ponds; when it does bite, the count
+/// is absorbed into a little more tilt so the tile still reads as "thrown".
+const FLY_MAX_PX = 260;
+
+/// Fly a newly played tile in from the hand of the player who threw it.
+///
+/// This is the whole point of the animation: one motion that says *who* threw
+/// *what*. A tile that simply appears at its slot says neither, and in a pond of
+/// eighteen tiles the eye has no way to find the new one. (The tile does not
+/// travel the whole way from the far side of the table: it comes in from that
+/// player's side, which is what the reference clients do and what keeps the other
+/// three ponds readable.)
+function flyDiscard(el, seat) {
+  const origin = seatOrigin(seat);
+  if (!origin) return;
+  const r = el.getBoundingClientRect();
+  const dx = origin.x - (r.left + r.width / 2);
+  const dy = origin.y - (r.top + r.height / 2);
+  // The pond the tile lands in is rotated to face its owner, so the vector has to
+  // be rotated the other way to be expressed in the tile's own coordinates.
+  const rad = -(POND_ROT[relativeSeat(seat)] || 0) * Math.PI / 180;
+  let lx = dx * Math.cos(rad) - dy * Math.sin(rad);
+  let ly = dx * Math.sin(rad) + dy * Math.cos(rad);
+  const len = Math.hypot(lx, ly);
+  const k = len > FLY_MAX_PX ? FLY_MAX_PX / len : 1;
+  lx *= k;
+  ly *= k;
+  el.style.setProperty("--fly-x", lx.toFixed(1) + "px");
+  el.style.setProperty("--fly-y", ly.toFixed(1) + "px");
+  el.style.setProperty("--fly-r", (k < 1 ? -16 : -9) + "deg");
+  el.classList.add("flying");
+  setTimeout(() => {
+    el.classList.remove("flying");
+    el.style.removeProperty("--fly-x");
+    el.style.removeProperty("--fly-y");
+    el.style.removeProperty("--fly-r");
+  }, 320);
+}
+
+/// Where a seat's discards come from: the observer's own hand, or an opponent's
+/// seat box.
+function seatOrigin(seat) {
+  const el = (state && seat === state.human)
+    ? document.getElementById("hand-area")
+    : document.getElementById(SEAT_SLOT_IDS[relativeSeat(seat)]);
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
 }
 
 function pace() {
@@ -1044,7 +1095,7 @@ function planBatch(batch, pending) {
     } else if (e.Win) {
       const ron = e.Win.from !== null && e.Win.from !== undefined;
       if (!ron) clock += step;          // the turn has to reach the winner first
-      add(clock, "headline", e.Win.seat);
+      add(clock, "headline", e.Win.seat, "win");
     } else if (e.Riichi) {
       // 「リーチ」 comes *before* the tile goes down — that is the order at a real
       // table, and the sideways tile is only the proof of it. Shout in the beat
@@ -1052,14 +1103,14 @@ function planBatch(batch, pending) {
       // everything queued behind it) one beat later.
       const at = lastDiscardAt(plan, e.Riichi.seat);
       if (at === null) {
-        add(clock, "headline", e.Riichi.seat);
+        add(clock, "headline", e.Riichi.seat, "riichi");
       } else {
         for (const s of plan) if (s.at >= at) s.at += step;
-        plan.push({ at, what: "headline", seat: e.Riichi.seat });
+        plan.push({ at, what: "headline", seat: e.Riichi.seat, kind: "riichi" });
         clock += step;
       }
     } else if (e.Ryuukyoku) {
-      add(clock, "headline", undefined);
+      add(clock, "headline", undefined, "draw");
     }
     // A 加杠's dora indicator (`DoraRevealed`) is not staged: the tile is already
     // drawn in the centre panel, and it arrives with the kan that turned it.
@@ -1109,7 +1160,7 @@ function runStep(s) {
   if (s.what === "discard") revealDiscard(s.seat);
   else if (s.what === "call") revealMeld(s.seat);
   else if (s.what === "shout") announceCall(s.seat, s.kind);
-  else if (s.what === "headline") showHeadline();
+  else if (s.what === "headline") showHeadline(s.kind);
   // The table advanced here, *now* — not when the step was planned. A step that
   // ran late must push everything after it back, or the next batch lands on top
   // of it.
@@ -1168,7 +1219,12 @@ function renderPond(frame, discards, rotDeg, seat) {
     // sees the tile go straight from the wall to the pond. Shade only, no motion:
     // movement would read as a fresh discard.
     if (d.tsumogiri) extra += " tsumogiri";
-    if (i === last) extra += " fresh";
+    // No landing class here: a tile that has not been played yet must not carry
+    // any animation of its own. It used to get one, and because a CSS animation
+    // outranks a plain `opacity: 0`, every new discard flashed on screen for the
+    // length of the animation and then vanished — the whole batch appearing and
+    // disappearing at once, before the beats revealed them one by one. The motion
+    // belongs to `revealDiscard`, which runs when the tile is actually due.
     // Not played yet as far as the table is concerned: laid out, so the pond does
     // not reflow when it lands, but not visible.
     if (i >= shown) extra += " queued";
@@ -1188,6 +1244,10 @@ function renderPond(frame, discards, rotDeg, seat) {
 /// New discards gathered during the current render, revealed in order at the end
 /// of it.
 const PENDING_DISCARDS = [];
+
+/// The drawn tile currently on screen, so the rise-in animation runs once per
+/// draw rather than once per repaint.
+let shownDrawn = null;
 
 function renderHand(view, human) {
   const me = view.players[human];
@@ -1253,18 +1313,26 @@ function renderHand(view, human) {
   });
   if (drawn !== null && drawn !== undefined) {
     const canPlay = discardable && !!findDiscardAction(drawn, riichiMode);
+    // Rise in only when this *is* a new draw: `renderHand` runs again on every
+    // state and again when the controls are released, so a class that always said
+    // "animate" would replay the motion on every one of those repaints.
+    const freshDraw = drawn !== shownDrawn;
+    shownDrawn = drawn;
     handEl.appendChild(tileEl(drawn, {
       clickable: canPlay,
       disabled: discardable && !canPlay,
       // The pulse means "this is about to be played for you", so it belongs
       // together with the note `autoPlayForcedDecision` writes — and neither may
       // appear while the controls are held back for the table to finish.
-      extra: "drawn" + (locked && !controlsHeld && state.decision
-        && state.decision.actions && state.decision.actions.length === 1
-        ? " auto-target" : ""),
+      extra: "drawn" + (freshDraw ? " draw-in" : "")
+        + (locked && !controlsHeld && state.decision
+          && state.decision.actions && state.decision.actions.length === 1
+          ? " auto-target" : ""),
       label: (riichiMode ? "立直并打出刚摸到的 " : "打出刚摸到的 ") + friendlyTileName(drawn),
       onClick: clickTile(drawn),
     }));
+  } else {
+    shownDrawn = null;
   }
 
   const info = document.getElementById("shanten-info");
@@ -1513,7 +1581,8 @@ function absorbEvents(events) {
     if (riichi.length) {
       const who1 = riichi.map((e) => botNames[e.Riichi.seat] || "对手").join("、");
       // The seat of the (first) declarer is where the banner belongs.
-      pendingHeadline = { shout: { text: "立直", sub: who1, seat: riichi[0].Riichi.seat } };
+      pendingHeadline = { kind: "riichi",
+                          shout: { text: "立直", sub: who1, seat: riichi[0].Riichi.seat } };
     }
     return;
   }
@@ -1569,7 +1638,7 @@ function absorbEvents(events) {
       + (dd.by !== null && dd.by !== undefined ? ` · ${botNames[dd.by] || ""} 宣布` : "");
     shout = { text: dd.reason === "Exhaustive" ? "流局" : "途中流局", sub, ms: announceMs };
   }
-  pendingHeadline = { shout, queue, announceMs };
+  pendingHeadline = { kind: wins.length ? "win" : "draw", shout, queue, announceMs };
 
   // Watchdog. The playback normally shows this within a few beats, but the table
   // is *paused* until the player has read the settlement (see the server's
@@ -1586,9 +1655,15 @@ let headlineWatchdog = null;
 
 /// Play the staged shout and settlement, once the playback has reached the beat
 /// they belong to. A 荣和 waits for the tile it happened on; a 自摸 for the turn.
-function showHeadline() {
+///
+/// `kind` is the event the step belongs to. A batch can hold more than one thing
+/// worth shouting about — a 立直 and then a 荣和 on the tile it declared with —
+/// and the earlier step must not consume the later shout: that would put a win
+/// panel on screen a beat before the tile that won the hand.
+function showHeadline(kind) {
   const h = pendingHeadline;
   if (!h) return;
+  if (kind && h.kind && kind !== h.kind) return;
   pendingHeadline = null;
   clearTimeout(headlineWatchdog);
   if (h.shout) announce(h.shout.text, h.shout.sub, h.shout.ms, h.shout.seat);
