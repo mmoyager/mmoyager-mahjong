@@ -387,6 +387,16 @@ pub struct Table {
     /// Events produced by the most recent `submit`, and nothing else. Kept
     /// separate because starting a round clears `events`.
     step_events: Vec<Event>,
+    /// Stop in `Phase::RoundEnd` instead of dealing the next round, until
+    /// `resume_round_end` is called.
+    ///
+    /// A screen needs the *finished* hand — the 榮和 tile in the pond, the
+    /// winner's hand — to stay on the table while the settlement is read, and
+    /// dealing the next round replaces exactly that. Worse, a whole round of
+    /// events can land in the same batch as the win, so the client is handed a
+    /// table it cannot show. Self-play, evaluation and the tests play straight
+    /// through, so this is off unless a caller asks for it (the table server does).
+    pause_at_round_end: bool,
     /// Number of rounds started, useful for self-play bookkeeping.
     pub rounds_played: u32,
     /// 0-based index of the current hand inside the match.
@@ -435,6 +445,7 @@ impl Table {
             finished: false,
             history: Vec::new(),
             step_events: Vec::new(),
+            pause_at_round_end: false,
             rounds_played: 0,
             round_index: 0,
             rounds_in_match: 4 * match length {
@@ -714,6 +725,31 @@ impl Table {
     /// Pending decisions, one per seat that must act.
     pub fn decisions(&self) -> &[Decision] {
         &self.decisions
+    }
+
+    /// Stop at the end of a round instead of dealing the next one; see
+    /// `pause_at_round_end`.
+    pub fn set_pause_at_round_end(&mut self, on: bool) {
+        self.pause_at_round_end = on;
+    }
+
+    /// Is the round over, with the next hand (or the end of the match) waiting?
+    pub fn at_round_end(&self) -> bool {
+        matches!(self.phase, Phase::RoundEnd)
+    }
+
+    /// Deal the next round, or end the match, after a round-end pause. Returns
+    /// the events that produces — the next hand's deal, or the end of the match.
+    pub fn resume_round_end(&mut self) -> Vec<Event> {
+        if !self.at_round_end() {
+            return Vec::new();
+        }
+        self.step_events.clear();
+        let paused = self.pause_at_round_end;
+        self.pause_at_round_end = false;
+        self.pump();
+        self.pause_at_round_end = paused;
+        std::mem::take(&mut self.step_events)
     }
 
     fn refresh_decisions(&mut self) {
@@ -1982,6 +2018,12 @@ impl Table {
                     break;
                 }
                 Phase::RoundEnd => {
+                    // With the pause on, the table waits here: `resume_round_end`
+                    // is what deals the next hand (or ends the match).
+                    if self.pause_at_round_end {
+                        self.decisions.clear();
+                        break;
+                    }
                     if self.advance_round() {
                         continue;
                     }
@@ -2519,6 +2561,61 @@ mod tests {
             "{:?}",
             d.actions
         );
+    }
+
+    /// A hand that ends can leave the table sitting on `Phase::RoundEnd`, with the
+    /// next round dealt only when asked. That is what lets a client keep the
+    /// finished hand on screen behind the settlement: without it the engine pumps
+    /// straight through the round transition, and the batch that carries the win
+    /// also carries the next hand's opening discards.
+    #[test]
+    fn round_end_can_wait_for_the_next_hand() {
+        let mut t = table(8);
+        t.set_pause_at_round_end(true);
+        set_hand(&mut t, 0, "123m456m678p11p23s");
+        for s in 1..4 {
+            set_hand(&mut t, s, "123m456m678p1z2z4z9s");
+        }
+        let round_before = t.round_number;
+        // An exhaustive draw is the cheapest way to end a hand from a settled
+        // position; `end_exhaustive` is the same path a bot's last discard takes.
+        let before = std::mem::take(&mut t.step_events);
+        t.end_exhaustive();
+        let events = std::mem::take(&mut t.step_events);
+
+        assert!(t.at_round_end(), "the round is over and the table is waiting");
+        assert!(
+            events.iter().any(|e| matches!(e, Event::Ryuukyoku { .. })),
+            "the draw is reported"
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e, Event::RoundStart { .. })),
+            "the next round must not be dealt while the settlement is unread: {:?}",
+            events
+        );
+        assert_eq!(t.round_number, round_before, "the round has not changed");
+
+        // And asking for it deals the next hand.
+        let next = t.resume_round_end();
+        assert!(!t.at_round_end(), "the table moved on");
+        assert!(
+            next.iter().any(|e| matches!(e, Event::RoundStart { .. })),
+            "resuming deals the next hand: {:?}",
+            next
+        );
+        let _ = before;
+    }
+
+    /// Self-play and the tests play straight through: the pause is opt-in.
+    #[test]
+    fn rounds_still_advance_by_default() {
+        let mut t = table(8);
+        set_hand(&mut t, 0, "123m456m678p11p23s");
+        for s in 1..4 {
+            set_hand(&mut t, s, "123m456m678p1z2z4z9s");
+        }
+        t.end_exhaustive();
+        assert!(!t.at_round_end(), "without the pause the next round is already dealt");
     }
 
     #[test]

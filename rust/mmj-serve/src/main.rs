@@ -409,7 +409,11 @@ impl Session {
     ) -> Self {
         let mut rules = Rules::tenhou();
         rules.length = length;
-        let table = Table::new(TableConfig { rules, seed });
+        let mut table = Table::new(TableConfig { rules, seed });
+        // Stop at the end of every hand. The players read a settlement on top of
+        // the finished hand, and the next round would replace it; the client asks
+        // for the next hand with `ClientMsg::Continue`.
+        table.set_pause_at_round_end(true);
         let mut agents: [Box<dyn Agent>; 4] = [
             Box::new(RandomAgent::new(0)),
             Box::new(RandomAgent::new(1)),
@@ -428,13 +432,6 @@ impl Session {
             seed,
             awaiting_ack: false,
         }
-    }
-
-    /// Did this batch of events end the hand?
-    fn hand_ended(events: &[Event]) -> bool {
-        events
-            .iter()
-            .any(|e| matches!(e, Event::Win { .. } | Event::Ryuukyoku { .. }))
     }
 
     /// Let every bot act until the human must decide, the hand ends, or the
@@ -465,13 +462,15 @@ impl Session {
                 };
                 match self.table.submit(d.seat, action) {
                     Ok(ev) => {
-                        let ended = Session::hand_ended(&ev);
                         events.extend(ev);
                         acted = true;
-                        // The hand ended and nothing is left to decide (a double
-                        // ron is settled in full, both winners in one batch), so
-                        // stop here: see `awaiting_ack`.
-                        if ended && self.table.decisions().is_empty() {
+                        // The hand ended: the table is sitting on `Phase::RoundEnd`
+                        // and the next round is only dealt when the player asks.
+                        // (Checking the phase rather than scanning the events is
+                        // what makes this work at all — the engine used to pump
+                        // straight through the round transition and into the next
+                        // hand before `submit` even returned.)
+                        if self.table.at_round_end() {
                             self.awaiting_ack = true;
                             return events;
                         }
@@ -765,9 +764,9 @@ async fn handle_socket(socket: WebSocket, checkpoints: CheckpointSource) {
                     }
                 };
                 // The player's own move can end the hand (their tsumo, their ron,
-                // their last discard exhausting the wall). Bots then must not
-                // play on into the next round: see `awaiting_ack`.
-                if Session::hand_ended(&events) && s.table.decisions().is_empty() {
+                // their last discard exhausting the wall). Bots then must not play
+                // on into the next round: see `awaiting_ack`.
+                if s.table.at_round_end() {
                     s.awaiting_ack = true;
                 } else {
                     events.extend(s.advance());
@@ -800,7 +799,10 @@ async fn handle_socket(socket: WebSocket, checkpoints: CheckpointSource) {
                     continue;
                 }
                 s.awaiting_ack = false;
-                let events = s.advance();
+                // Deal the next hand (or end the match), then let the bots play
+                // until the player has something to decide.
+                let mut events = s.table.resume_round_end();
+                events.extend(s.advance());
                 if !events.is_empty() {
                     send_json!(json!({ "type": "events", "events": events }));
                 }

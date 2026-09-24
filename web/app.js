@@ -402,7 +402,7 @@ function handle(msg) {
         lastRoundKey = null;
         deltaScores = null;
         riichiMode = false;
-        for (const seat of [0, 1, 2, 3]) shownDiscards[seat] = 0;
+        for (const seat of [0, 1, 2, 3]) visibleDiscards[seat] = 0;
         logs = [];
         const logEl = document.getElementById("log");
         if (logEl) logEl.innerHTML = "";
@@ -471,6 +471,13 @@ function render() {
     if (m) pendingMelds[m.seat] = (pendingMelds[m.seat] || 0) + 1;
   }
   const roundKey = view.round_wind + ":" + view.round_number + ":" + view.honba;
+  // A new hand starts from a clean table, and the pond clock has to follow it
+  // down: left over from the hand that just ended it covers the new hand's whole
+  // opening, so its first discards (often three of them, plus the player's own
+  // first decision) would appear in a single frame instead of a beat apart.
+  if (lastRoundKey !== null && roundKey !== lastRoundKey) {
+    for (const seat of [0, 1, 2, 3]) visibleDiscards[seat] = 0;
+  }
   if (lastRoundKey !== null && roundKey !== lastRoundKey && lastScores) {
     // A round just ended: keep the deltas on screen for a few seconds. The
     // previous timer is cancelled so a fast round cannot clear a newer delta.
@@ -539,7 +546,7 @@ function render() {
   // Everything that answers this batch waits for the batch to be on screen. The
   // hold has to start *before* the hand is drawn, because the hand decides
   // whether its tiles are clickable and whether the drawn tile is visible at all.
-  const { plan, lastAt } = planBatch(batch, PENDING_DISCARDS.splice(0));
+  const { plan, lastAt } = planBatch(batch, hiddenDiscards());
   if (lastAt > 0) holdControls(lastAt + 60);
   renderHand(view, human);
   if (lastAt > 0) {
@@ -904,10 +911,6 @@ function meldRow(melds, small, seat, hidden) {
 /// The riichi declaration tile lies sideways; if that tile is called, the next
 /// discard takes the sideways spot instead, which is what the competition rules
 /// ask for (the marker has to stay in the pond of whoever declared).
-/// Per seat, how many discards are already on screen. New ones are revealed on a
-/// timer so a whole round does not appear at once.
-const shownDiscards = { 0: 0, 1: 0, 2: 0, 3: 0 };
-
 /// How many discards of each seat the table is allowed to be showing.
 ///
 /// This is the *only* thing that decides whether a pond tile is visible, and it
@@ -936,10 +939,11 @@ function applyDiscardVisibility() {
 }
 
 /// Reveal one more discard of `seat`, with its landing animation.
-function revealDiscard(seat) {
-  visibleDiscards[seat] = (visibleDiscards[seat] || 0) + 1;
+function revealDiscard(seat, index) {
+  const at = typeof index === "number" ? index : (visibleDiscards[seat] || 0);
+  visibleDiscards[seat] = at + 1;
   const pond = pondForSeat(seat);
-  const el = pond && [...pond.querySelectorAll(".pond-grid .tile")][visibleDiscards[seat] - 1];
+  const el = pond && [...pond.querySelectorAll(".pond-grid .tile")][at];
   applyDiscardVisibility();
   if (!el) return;
   flyDiscard(el, seat);
@@ -1056,30 +1060,59 @@ function revealMeld(seat) {
 /// early if only the scheduled time counted. Both were visible as two discards
 /// landing ~100 ms apart.
 let lastBeatAt = 0;
-let lastPlannedBeatAt = 0;
 
-function planBatch(batch, pending) {
+/// The steps a plan still owes, so the next plan can take them off the table's
+/// schedule before laying out its own. Without this, a plan that is replaced
+/// mid-flight leaves timers behind that reveal tiles the new plan is about to
+/// schedule as well.
+let planTimers = [];
+
+function planBatch(batch, hidden) {
   const step = pace();
   const now = performance.now();
-  // Start the plan no earlier than one beat after the previous batch's last
-  // step, so "a second per player" holds across batch boundaries too.
-  const lead = Math.max(0, Math.max(lastBeatAt, lastPlannedBeatAt) + step - now);
+  // Start no earlier than one beat after the last step that actually *fired*, so
+  // "a second per player" holds across batches too. It is deliberately not
+  // chained to when the previous plan *would* have finished: a plan that is
+  // replaced before it runs still has its steps on the table's schedule, and
+  // measuring from that pushed every later plan further out — the lead grew by a
+  // second or two each time until a hand's shout was scheduled half a minute away
+  // and the client's rescue timer showed it instead.
+  const lead = Math.max(0, lastBeatAt + step - now);
   const events = (batch && batch.length)
     ? batch
     : ((state && state.view && state.view.events) || []);
-  const queue = pending.slice();
+  const queue = hidden.slice();
   const plan = [];
   let clock = 0;
-  const add = (at, what, seat, kind) => {
-    plan.push({ at: at + lead, what, seat, kind });
+  const add = (at, what, seat, kind, index) => {
+    plan.push({ at: at + lead, what, seat, kind, index });
   };
+
+  // A tile still hidden that *this* batch says nothing about was played before
+  // every event in it: it is the tail of a plan that was replaced before it
+  // finished. It takes the first beats, or the table would show a discard from
+  // this batch and only then the one that came before it.
+  for (const p of queue.slice()) {
+    if (events.some((e) => e.Discard && e.Discard.seat === p.seat
+                     && e.Discard.tile === p.tile)) {
+      continue;
+    }
+    add(clock, "discard", p.seat, undefined, p.index);
+    clock += step;
+    queue.splice(queue.indexOf(p), 1);
+  }
 
   for (const e of events) {
     if (e.Discard) {
       const d = e.Discard;
-      const i = queue.findIndex((p) => p.seat === d.seat && p.tile === d.tile);
+      // The *newest* hidden tile of that seat: an older one of the same face can
+      // be sitting in the queue, and this event is about the one just played.
+      let i = -1;
+      for (let k = queue.length - 1; k >= 0; k--) {
+        if (queue[k].seat === d.seat && queue[k].tile === d.tile) { i = k; break; }
+      }
       if (i >= 0) {
-        add(clock, "discard", d.seat);
+        add(clock, "discard", d.seat, undefined, queue[i].index);
         queue.splice(i, 1);
       }
       clock += step;
@@ -1115,13 +1148,10 @@ function planBatch(batch, pending) {
     // A 加杠's dora indicator (`DoraRevealed`) is not staged: the tile is already
     // drawn in the centre panel, and it arrives with the kan that turned it.
   }
-  // Anything the batch did not account for — a state with no events to pair it
-  // with, a resumed game — still has to be revealed, and on its own beats *after*
-  // everything the batch does describe. Guessing "first" would put an unknown
-  // tile on the same beat as a known one, and two tiles appearing together is the
-  // exact thing this clock exists to prevent.
+  // Whatever is left — a state with no events to pair it with at all — still has
+  // to be revealed, on its own beats, rather than dropped or revealed together.
   for (const p of queue) {
-    add(clock, "discard", p.seat);
+    add(clock, "discard", p.seat, undefined, p.index);
     clock += step;
   }
   // The beats are read off the finished plan, because the 立直 shift above moves
@@ -1133,7 +1163,6 @@ function planBatch(batch, pending) {
     lastBeat = Math.max(lastBeat, s.at);
     if (s.what !== "headline") turnAt = Math.max(turnAt, s.at);
   }
-  lastPlannedBeatAt = now + lastBeat;
   return { plan, lastAt: turnAt };
 }
 
@@ -1150,14 +1179,16 @@ function lastDiscardAt(plan, seat) {
 /// closing over them, because a render can replace every tile on the table
 /// between one step and the next.
 function runPlan(plan) {
+  for (const id of planTimers) clearTimeout(id);
+  planTimers = [];
   plan.forEach((s) => {
     if (s.at <= 0) { runStep(s); return; }
-    setTimeout(() => runStep(s), s.at);
+    planTimers.push(setTimeout(() => runStep(s), s.at));
   });
 }
 
 function runStep(s) {
-  if (s.what === "discard") revealDiscard(s.seat);
+  if (s.what === "discard") revealDiscard(s.seat, s.index);
   else if (s.what === "call") revealMeld(s.seat);
   else if (s.what === "shout") announceCall(s.seat, s.kind);
   else if (s.what === "headline") showHeadline(s.kind);
@@ -1165,6 +1196,21 @@ function runStep(s) {
   // ran late must push everything after it back, or the next batch lands on top
   // of it.
   if (s.what !== "headline") lastBeatAt = performance.now();
+}
+
+/// Every tile the table is still hiding, in pond order: the plan's raw material.
+/// Read off the clock rather than remembered from the render that created the
+/// tiles, so a plan is complete on its own and a replaced plan loses nothing.
+function hiddenDiscards() {
+  const out = [];
+  if (!state || !state.view) return out;
+  for (let seat = 0; seat < 4; seat++) {
+    const discards = state.view.players[seat].discards || [];
+    for (let i = visibleDiscards[seat] || 0; i < discards.length; i++) {
+      out.push({ seat, index: i, tile: discards[i].tile });
+    }
+  }
+  return out;
 }
 
 /// One short shout over the seat that called, a beat before its tiles are
@@ -1230,20 +1276,7 @@ function renderPond(frame, discards, rotDeg, seat) {
     if (i >= shown) extra += " queued";
     grid.appendChild(tileEl(d.tile, { small: true, extra }));
   });
-  if (seat !== undefined) {
-    const seen = shownDiscards[seat] || 0;
-    const tiles = [...grid.querySelectorAll(".tile")];
-    for (let i = seen; i < tiles.length; i++) {
-      PENDING_DISCARDS.push({ seat, el: tiles[i],
-                              tile: Number(tiles[i].dataset.tile) });
-    }
-    shownDiscards[seat] = tiles.length;
-  }
 }
-
-/// New discards gathered during the current render, revealed in order at the end
-/// of it.
-const PENDING_DISCARDS = [];
 
 /// The drawn tile currently on screen, so the rise-in animation runs once per
 /// draw rather than once per repaint.

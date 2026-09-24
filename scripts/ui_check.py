@@ -789,7 +789,12 @@ async def check_settle():
                         failures.append(f"win settlement has no score table: {after['text']}")
                     if after["tiles"] == 0:
                         failures.append(f"win settlement shows no hand ({title}): {after['text']}")
-                    painted = json.loads(await b.ev("""JSON.stringify((() => {
+                    # The panel's tiles are created when it opens, and each face is
+                    # an image probe: give them a moment to decode before judging,
+                    # or a panel that opened a beat ago reads as blank tiles.
+                    painted = {"painted": 0, "faceUp": 0, "n": 0}
+                    for _ in range(15):
+                        painted = json.loads(await b.ev("""JSON.stringify((() => {
                         const ts = [...document.querySelectorAll('#overlay-body .tile')];
                         // A face-down tile (the outer two of an 暗槓) has no
                         // printed face on purpose, so it is not "unpainted".
@@ -799,7 +804,10 @@ async def check_settle():
                             const f = t.querySelector('.tile-face');
                             return f && getComputedStyle(f).backgroundImage.includes('/tiles/');
                         }).length};
-                    })())"""))
+                        })())"""))
+                        if painted["painted"] >= painted["faceUp"]:
+                            break
+                        await asyncio.sleep(0.1)
                     if painted["painted"] < painted["faceUp"]:
                         failures.append(
                             f"settlement hand tiles do not paint "
@@ -1667,7 +1675,9 @@ async def check_meld():
 STAGE_HOOKS = r"""
 (() => {
   if (window.__stage) return 'already';
-  const S = {events: [], violations: [], marks: {}, plans: [], landings: []};
+  const S = {events: [], violations: [], marks: {}, plans: [], landings: [],
+             headlines: []};
+  const P_HEADLINES = S.headlines;
   window.__stage = S;
   const now = () => Math.round(performance.now());
   const queuedPerSeat = () => [0, 1, 2, 3].map(s => {
@@ -1710,6 +1720,12 @@ STAGE_HOOKS = r"""
       } else if (name === 'revealMeld') {
         S.events.push({t: now(), what: 'call', seat: arg});
       } else if (name === 'showHeadline') {
+        // A call that consumes nothing is how a staged shout gets lost: the plan
+        // asked for a kind that did not match, or there was nothing staged at all.
+        P_HEADLINES.push({t: now(), asked: arg || null,
+                          staged: staged && staged.kind ? staged.kind : null,
+                          consumed: (typeof pendingHeadline === 'undefined'
+                                     || pendingHeadline === null)});
         // Read what is about to be shouted and what the table still owes the
         // player: a shout that arrives with discards still in the queue is a
         // shout about a tile nobody can see yet.
@@ -1735,7 +1751,22 @@ STAGE_HOOKS = r"""
       const at = {};
       r.plan.forEach(s => { if (s.what === 'discard') at[s.at] = (at[s.at] || 0) + 1; });
       const collide = Object.values(at).filter(n => n > 1).length;
-      S.plans.push({t: now(), events: (batch || []).length, pending: (pending || []).length,
+      const saw = (batch || []).map(e => {
+        const k = Object.keys(e)[0];
+        if (k === 'Win') return 'win';
+        if (k === 'Ryuukyoku') return 'draw';
+        if (k === 'Discard') return 'discard';
+        if (k === 'Meld' || k === 'Kan') return 'call';
+        if (k === 'Riichi') return 'riichi';
+        if (k === 'Draw') return 'draw1';
+        return k;
+      });
+      S.plans.push({t: now(), saw, lead: r.plan.length ? r.plan[0].at : null,
+                    heads: r.plan.filter(s => s.what === 'headline')
+                                  .map(s => ({at: s.at, kind: s.kind})),
+                    lastBeat: r.plan.reduce((m, s) => Math.max(m, s.at), 0),
+                    events: (batch || []).length,
+                    pending: (pending || []).length,
                     steps: r.plan.length, collide,
                     kinds: r.plan.map(s => s.what).join(' '),
                     sent: (batch || []).filter(e => e.Discard)
@@ -1840,7 +1871,42 @@ def stage_failures(log, pace_ms, allow_gap):
     #     tile that won it has to be in the pond;
     #   * a 立直 rides on the declarer's own discard, so that player's pond has to
     #     be complete (the sideways tile is the whole announcement).
+    # A shout has to come from the playback, not from the client's rescue timer.
+    # The plan that carries a hand's end shows it a beat or two later; the watchdog
+    # only steps in when no plan did (it waits ~10 s), and a shout that late is a
+    # shout the player has already stopped waiting for.
+    for e in events:
+        if e["what"] != "headline" or not e.get("text"):
+            continue
+        before = [p for p in log.get("plans", []) if p["t"] <= e["t"]]
+        if not before:
+            continue
+        age = e["t"] - before[-1]["t"]
+        if age > 9000:
+            bad.append(f"the shout {e['text']!r} came {age} ms after the last plan, so the "
+                       "playback never staged it and the watchdog did")
+            print(f"  late shout {e['text']!r} at {e['t']}")
+            for plan in log.get("all_plans", [])[-4:]:
+                print(f"    win/draw plan t={plan['t']} saw={plan.get('saw')} "
+                      f"lead={plan.get('lead')} heads={plan.get('heads')} "
+                      f"steps={plan.get('steps')}")
+            for h in log.get("headlines", [])[-8:]:
+                print(f"    showHeadline asked={h['asked']} staged={h['staged']} "
+                      f"consumed={h['consumed']} at {h['t']}")
+
     ending = ("荣和", "自摸", "双响", "三响", "流局满贯", "流局", "途中流局")
+    for e in events:
+        if e["what"] == "headline" and e.get("text") in ending and e.get("queued"):
+            print(f"  shout with discards still queued at {e['t']}: {e}")
+            for plan in log.get("plans", []):
+                if abs(plan["t"] - e["t"]) < 6000:
+                    print(f"    plan t={plan['t']} saw={plan.get('saw')} "
+                          f"lead={plan.get('lead')} heads={plan.get('heads')} "
+                          f"steps={plan.get('steps')} pending={plan['pending']} "
+                          f"ats={plan.get('ats')}")
+            for h in log.get("headlines", [])[-10:]:
+                print(f"    showHeadline asked={h['asked']} staged={h['staged']} "
+                      f"consumed={h['consumed']} at {h['t']}")
     shouted = 0
     for e in events:
         if e["what"] != "headline" or e.get("text") is None:
@@ -1877,6 +1943,22 @@ def stage_failures(log, pace_ms, allow_gap):
     elif len(far) < len(flew):
         bad.append(f"{len(flew) - len(far)} of {len(flew)} discards flew in with no offset, "
                    "so they appeared at their slot instead of coming from the hand")
+    # A batch that ends the hand must end there. The engine used to pump the round
+    # transition inside the same `submit`, so the batch carrying a win also carried
+    # the next hand's deal and its opening discards: the client was handed a table
+    # showing the *next* round while it was trying to announce the hand that had
+    # just ended.
+    for plan in log.get("plans", []):
+        saw = plan.get("saw") or []
+        end = next((i for i, k in enumerate(saw) if k in ("win", "draw")), None)
+        if end is None:
+            continue
+        after = [k for k in saw[end + 1:] if k not in ("RoundEnd",)]
+        if after:
+            bad.append(f"a hand ended and the same batch went on with {after[:6]} "
+                       f"(plan at {plan['t']} ms): the next hand must not be dealt "
+                       "until the settlement has been read")
+
     landings = log.get("landings", [])
     if landings:
         worst = max(max(abs(l["dx"]), abs(l["dy"])) for l in landings)
@@ -1918,7 +2000,7 @@ async def check_stage():
         # arriving before the tile that won the hand was on the table), and the
         # human takes a tsumo/ron whenever one is offered.
         played = 0
-        for _ in range(3000):
+        for _ in range(5000):
             what = await b.ev(SETTLE_STEP)
             if what == "new-game":
                 played += 1
@@ -1935,6 +2017,8 @@ async def check_stage():
             " plans: window.__stage.plans.slice(-60),"
             " selftest: window.__stage.selftest,"
             " landings: window.__stage.landings,"
+            " headlines: window.__stage.headlines.slice(-40),"
+            " all_plans: window.__stage.plans.filter(p => p.saw.some(k => k === 'win' || k === 'draw')),"
             " panels_seen: window.__stage.events.filter(e => e.what === 'panel').length})"))
         st = log.get("selftest") or {}
         drawn_then = st.get("queuedWhileAnimated")
