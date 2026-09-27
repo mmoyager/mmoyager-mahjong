@@ -1145,7 +1145,8 @@ impl Table {
         }
     }
 
-    /// A player declined a legal ron: record 振聴 consequences.
+    /// A player declined a legal win — a ron in a call window, or a tsumo on
+    /// their own turn (docs/RULES.md §6.2.8): record the 振聴 consequences.
     fn note_pass(&mut self, seat: u8) {
         let p = &mut self.players[seat as usize];
         p.temp_furiten = true;
@@ -1160,8 +1161,7 @@ impl Table {
         // "win or discard" reaches this point, so anything else is a decline.
         if !matches!(action, Action::Tsumo) {
             let p = &self.players[seat as usize];
-            if p.riichi
-                && p.drawn.is_some()
+            let declined = p.drawn.is_some()
                 && self
                     .score_for(
                         seat,
@@ -1171,9 +1171,15 @@ impl Table {
                         false,
                         p.drawn_is_rinshan,
                     )
-                    .is_some()
-            {
-                self.players[seat as usize].riichi_furiten = true;
+                    .is_some();
+            if declined {
+                // 和了放棄: declining a self-drawn win is 同巡振聴 — no ron until
+                // this player's next draw (docs/RULES.md §6.2.8), which is the
+                // whole point of passing on a cheap tsumo to wait for a better
+                // tile. Only the riichi case was handled before, so a player who
+                // declined a tsumo could still ron the very next discard, which
+                // the rules do not allow.
+                self.note_pass(seat);
             }
         }
         match action {
@@ -2784,6 +2790,77 @@ mod tests {
         assert!(t.players[1].drawn_is_rinshan);
         assert_eq!(t.wall.remaining(), before - 1); // the rinshan tile
         assert_eq!(t.phase, Phase::Turn { seat: 1 });
+    }
+
+    /// 自摸 is optional: 「和了は任意」 (docs/RULES.md §7.1). A player who passes on
+    /// a cheap tsumo to wait for a better tile must be able to, and the pass costs
+    /// them the ron until their next draw (§6.2.8) — otherwise they could ron the
+    /// very next discard they had just refused to win on.
+    #[test]
+    fn a_tsumo_can_be_declined_and_costs_the_ron_until_the_next_draw() {
+        let mut t = table(21);
+        // 13 tiles waiting on 2s/5s, then the winning 4s is drawn.
+        set_hand(&mut t, 0, "123m456m789m11p23s");
+        let win = tile("4s", 3);
+        t.players[0].hand[kind_of(win) as usize] += 1;
+        t.players[0].hand_tiles.push(win);
+        t.players[0].hand_tiles.sort_unstable();
+        t.players[0].drawn = Some(win);
+        t.phase = Phase::Turn { seat: 0 };
+        t.refresh_decisions();
+        let d = t
+            .decisions()
+            .iter()
+            .find(|d| d.seat == 0)
+            .expect("seat 0 acts")
+            .clone();
+        assert!(d.actions.contains(&Action::Tsumo), "the tsumo is offered");
+        let discard = d
+            .actions
+            .iter()
+            .find(|a| matches!(a, Action::Discard { .. }))
+            .copied()
+            .expect("and so is discarding instead of taking it");
+
+        t.submit(0, discard).unwrap();
+        assert!(
+            t.is_furiten(0),
+            "declining a tsumo is 同巡振聴: no ron until the next draw"
+        );
+
+        // Seat 1 now throws one of the tiles seat 0 is waiting on.
+        set_hand(&mut t, 1, "129m129p129s1234z");
+        let drawn = tile("5z", 3);
+        t.players[1].hand[kind_of(drawn) as usize] += 1;
+        t.players[1].hand_tiles.push(drawn);
+        t.players[1].drawn = Some(drawn);
+        t.phase = Phase::Turn { seat: 1 };
+        t.refresh_decisions();
+        let throw = t
+            .decisions()
+            .iter()
+            .find(|d| d.seat == 1)
+            .expect("seat 1 acts")
+            .actions
+            .iter()
+            .find(|a| {
+                let two_s = crate::tile::parse_kind("2s").expect("2s is a kind");
+                matches!(a, Action::Discard { tile, .. } if kind_of(*tile) == two_s)
+            })
+            .copied()
+            .expect("seat 1 can throw the 2s");
+        t.submit(1, throw).unwrap();
+
+        let offered = t
+            .decisions()
+            .iter()
+            .find(|d| d.seat == 0)
+            .map(|d| d.actions.contains(&Action::Ron))
+            .unwrap_or(false);
+        assert!(
+            !offered,
+            "the ron on the very tile that was just refused must not be offered"
+        );
     }
 
     /// 立直 may be declared on a discard exactly when the 13 tiles that remain are

@@ -53,6 +53,9 @@ let socket = null;
 let state = null;
 let botNames = ["你", "AI", "AI", "AI"];
 let riichiMode = false;
+/// True once the player has passed on a self-drawn win for this decision; the win
+/// button goes away and the hand stays playable.
+let tsumoDeclined = false;
 let logs = [];
 let deltaScores = null;
 /// The state that arrived while a settlement panel was open.
@@ -375,6 +378,14 @@ let connected = false;
 function send(obj) {
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify(obj));
+    // Passing is an action at the table even though nothing moves: the next
+    // player's turn starts a beat after it. Without this the client jumped
+    // straight from "I passed" to its own draw when the pass was the last call
+    // window of the go-around (there was nothing in the reply to stage, so the
+    // whole batch played out in the same frame).
+    if (obj && obj.type === "action" && obj.action === "Pass") {
+      lastBeatAt = performance.now();
+    }
     return true;
   }
   toast("和服务器断开了连接，正在重连…");
@@ -402,6 +413,7 @@ function handle(msg) {
         lastRoundKey = null;
         deltaScores = null;
         riichiMode = false;
+        tsumoDeclined = false;
         for (const seat of [0, 1, 2, 3]) {
           visibleDiscards[seat] = 0;
           visibleMelds[seat] = 0;
@@ -557,10 +569,20 @@ function render() {
   // Everything that answers this batch waits for the batch to be on screen. The
   // hold has to start *before* the hand is drawn, because the hand decides
   // whether its tiles are clickable and whether the drawn tile is visible at all.
-  const { plan, lastAt } = planBatch(batch, hiddenDiscards(), hiddenMelds());
-  if (lastAt > 0) holdControls(lastAt + 60);
+  const { plan, lastAt, lead } = planBatch(batch, hiddenDiscards(), hiddenMelds());
+  // The player's own turn is an action like every other one: the tile they draw
+  // appears when the beat that belongs to it has passed, even when the batch has
+  // nothing else to show (a draw is not a visible step). A call window is the
+  // opposite — it has to come up while the tile it is about is still fresh — so a
+  // decision with no discard of its own is never held back.
+  const mine = state && state.view && state.decision
+    && (state.view.players[state.human].drawn !== null
+        && state.view.players[state.human].drawn !== undefined)
+    && state.decision.actions.some((a) => a.Discard);
+  const holdMs = Math.max(lastAt, mine ? lead : 0) + 60;
+  if (holdMs > 60) holdControls(holdMs);
   renderHand(view, human);
-  if (lastAt > 0) {
+  if (holdMs > 60) {
     // The plan draws them once the last beat has landed.
     const bar = document.getElementById("action-bar");
     if (bar) bar.innerHTML = "";
@@ -611,9 +633,29 @@ function stopForcedDecision() {
   if (info) info.classList.remove("auto-note");
 }
 
+/// How long a structural wait has been running, so a queue that somehow never
+/// clears cannot hold the player's turn for ever.
+let releaseWaited = 0;
+
 /// Draw the controls now, unless a hold still owns them.
 function releaseControls() {
   if (controlTimer !== null) return;
+  // The player's own turn waits for the table to be finished with the batch: if a
+  // pond still has a tile that has not been played, the draw is not due yet. This
+  // is the same guarantee the shout gets, enforced where it is visible rather than
+  // left to the plan — "my next tile must not appear before the others have
+  // discarded" is the rule the whole playback exists for.
+  if (document.querySelector("#ring .pond-grid .tile.queued") && releaseWaited < pace() * 4) {
+    releaseWaited += 80;
+    controlsHeld = true;
+    clearTimeout(controlTimer);
+    controlTimer = setTimeout(() => {
+      controlTimer = null;
+      releaseControls();
+    }, 80);
+    return;
+  }
+  releaseWaited = 0;
   controlsHeld = false;
   awaitingTurn = false;
   // A settlement that started during the wait owns the screen now; its own path
@@ -856,46 +898,43 @@ function meldGroup(meld, seat, small) {
     return g;
   }
 
-  // The tiles in reading order, plus the one that gets stacked (加杠 only).
+  // The tiles in reading order.
   //
   // `called` is always in the payload. If it ever stops being there, the layout
   // must not fall over: a run still has a fixed order, and a quad's four tiles
   // are one kind, so the first tile stands in for the missing one.
   const called = (meld.called === null || meld.called === undefined) ? tiles[0] : meld.called;
   let row;
-  let stacked = null;
   if (kind === "Chi") {
     const rest = tiles.filter((t) => t !== called).sort((a, b) => a - b);
     row = [called, ...rest];
   } else if (kind === "Kakan") {
-    stacked = called;
-    row = tiles.filter((t) => t !== stacked);
+    // 加杠: the added tile lies next to the sideways one and is turned the same
+    // way, so the pair reads as "these two are the quad's fourth and its
+    // indicator". (A real table stacks them; see the note in style.css for why a
+    // 24 px tile does not.)
+    const slot0 = meldSidewaysSlot(kind, offset);
+    const rest = tiles.filter((t) => t !== called);
+    row = [...rest.slice(0, slot0 + 1), called, ...rest.slice(slot0 + 1)];
   } else {
     row = tiles.slice();
   }
 
   const slot = meldSidewaysSlot(kind, offset);
+  // Which slots lie sideways: one, except for a 加杠, where the added tile beside
+  // the indicator is turned too.
+  const sideways = kind === "Kakan" ? new Set([slot, slot + 1]) : new Set([slot]);
   g.dataset.sideways = String(slot + 1);
   const source = meldSourceLabel(kind, offset);
   row.slice(0, 4).forEach((t, i) => {
-    if (i !== slot) {
+    if (!sideways.has(i)) {
       g.appendChild(tileEl(t, { small, label: label + " " + friendlyTileName(t) }));
       return;
     }
-    const rot = tileEl(t, {
+    g.appendChild(tileEl(t, {
       small, extra: "rot",
       label: `${label} ${friendlyTileName(t)}（横向，${source}）`,
-    });
-    if (stacked !== null) {
-      // 加杠: the fourth tile lies *on top of* the sideways one. It is rendered
-      // inside the sideways tile and counter-rotated, so it reads upright while
-      // the tile under it stays sideways.
-      rot.appendChild(tileEl(stacked, {
-        small, extra: "stacked",
-        label: label + " " + friendlyTileName(stacked) + "（加杠）",
-      }));
-    }
-    g.appendChild(rot);
+    }));
   });
   return g;
 }
@@ -952,6 +991,7 @@ function applyDiscardVisibility() {
 /// Reveal one more discard of `seat`, with its landing animation.
 function revealDiscard(seat, index) {
   const at = typeof index === "number" ? index : (visibleDiscards[seat] || 0);
+  if (at < (visibleDiscards[seat] || 0)) return;   // already on screen
   visibleDiscards[seat] = at + 1;
   const pond = pondForSeat(seat);
   const el = pond && [...pond.querySelectorAll(".pond-grid .tile")][at];
@@ -1078,20 +1118,17 @@ function hiddenMelds() {
 ///   * a 自摸 costs one extra beat, because it follows that player's draw, so the
 ///     shout comes when the turn has actually reached them.
 ///
-/// Returns the plan and the time the last *visible* step lands, which is when the
-/// player's own turn may start.
-/// When the table last advanced, on `performance.now()`'s clock — both the beat
-/// that has *fired* and the last beat the running plan still owes. The beat is
-/// global rather than per batch: a new state can arrive the instant the previous
-/// plan finished (the player answers a call window in a few hundred
-/// milliseconds), and the next discard must still get its own beat instead of
-/// landing on top of the last one.
+/// Every step takes the next beat, so the plan says exactly when the table may act
+/// again. Returns the plan, the time the last *visible* step lands (when the
+/// player's own turn may start) and the lead it used.
 ///
-/// Two values are needed, not one. A plan whose steps are still queued would be
-/// walked over by the next plan if only the fired time counted; and a step that
-/// fired *late* (a busy frame, a repaint) would let the next plan start a beat
-/// early if only the scheduled time counted. Both were visible as two discards
-/// landing ~100 ms apart.
+/// `lastBeatAt` is when the table last advanced, on `performance.now()`'s clock —
+/// when the last step actually *fired*. It is global rather than per batch: a new
+/// state can arrive the instant the previous plan finished (the player answers a
+/// call window in a few hundred milliseconds), and the next discard must still get
+/// its own beat instead of landing on top of the last one. A step that fired late
+/// (a busy frame, a repaint) pushes the next plan back with it, because the time
+/// is read when it runs rather than when it was planned.
 let lastBeatAt = 0;
 
 /// The steps a plan still owes, so the next plan can take them off the table's
@@ -1118,8 +1155,13 @@ function planBatch(batch, hidden, hiddenM) {
   const mqueue = hiddenM.slice();
   const plan = [];
   let clock = 0;
+  // Every step takes the next beat — and *only* a step does. An event whose tile
+  // is already on screen (the same batch seen again by a later render) used to
+  // advance the clock too, which pushed the tiles that really were still hidden
+  // several seconds into the future and held the player's controls with them.
   const add = (at, what, seat, kind, index) => {
     plan.push({ at: at + lead, what, seat, kind, index });
+    if (what !== "headline") clock = at + step;
   };
 
   // A tile still hidden that *this* batch says nothing about was played before
@@ -1132,7 +1174,6 @@ function planBatch(batch, hidden, hiddenM) {
       continue;
     }
     add(clock, "discard", p.seat, undefined, p.index);
-    clock += step;
     queue.splice(queue.indexOf(p), 1);
   }
 
@@ -1146,7 +1187,6 @@ function planBatch(batch, hidden, hiddenM) {
       continue;
     }
     add(clock, "call", m.seat, undefined, m.index);
-    clock += step;
     mqueue.splice(mqueue.indexOf(m), 1);
   }
 
@@ -1163,14 +1203,14 @@ function planBatch(batch, hidden, hiddenM) {
         add(clock, "discard", d.seat, undefined, queue[i].index);
         queue.splice(i, 1);
       }
-      clock += step;
+      // A discard that is already on screen is not shown again and costs nothing:
+      // it was played before whatever is still hidden.
     } else if (e.Meld || e.Kan) {
       // A call is two steps, the way it is at a table: the shout, then the tiles
       // assembled. 電脳麻将's replay does the same (`say()` first, tiles on the
       // next entry).
       const m = e.Meld || e.Kan;
       add(clock, "shout", m.seat, String(m.meld ? m.meld.kind : m.kind));
-      clock += step;
       // 加槓 *replaces* its 碰, so it reveals no new set: the seat's hidden list
       // decides, not the event. Nothing to reveal means the shout stands alone.
       const mi = mqueue.findIndex((q) => q.seat === m.seat);
@@ -1178,7 +1218,6 @@ function planBatch(batch, hidden, hiddenM) {
         add(clock, "call", m.seat, undefined, mqueue[mi].index);
         mqueue.splice(mi, 1);
       }
-      clock += step;
     } else if (e.Win) {
       const ron = e.Win.from !== null && e.Win.from !== undefined;
       if (!ron) clock += step;          // the turn has to reach the winner first
@@ -1194,7 +1233,7 @@ function planBatch(batch, hidden, hiddenM) {
       } else {
         for (const s of plan) if (s.at >= at) s.at += step;
         plan.push({ at, what: "headline", seat: e.Riichi.seat, kind: "riichi" });
-        clock += step;
+        clock = at + step;
       }
     } else if (e.Ryuukyoku) {
       add(clock, "headline", undefined, "draw");
@@ -1204,14 +1243,8 @@ function planBatch(batch, hidden, hiddenM) {
   }
   // Whatever is left — a state with no events to pair it with at all — still has
   // to be revealed, on its own beats, rather than dropped or revealed together.
-  for (const p of queue) {
-    add(clock, "discard", p.seat, undefined, p.index);
-    clock += step;
-  }
-  for (const m of mqueue) {
-    add(clock, "call", m.seat, undefined, m.index);
-    clock += step;
-  }
+  for (const p of queue) add(clock, "discard", p.seat, undefined, p.index);
+  for (const m of mqueue) add(clock, "call", m.seat, undefined, m.index);
   // The beats are read off the finished plan, because the 立直 shift above moves
   // steps: `lastBeat` is when the table may act again, and the player's own turn
   // starts after the last step that is not a shout.
@@ -1221,7 +1254,7 @@ function planBatch(batch, hidden, hiddenM) {
     lastBeat = Math.max(lastBeat, s.at);
     if (s.what !== "headline") turnAt = Math.max(turnAt, s.at);
   }
-  return { plan, lastAt: turnAt };
+  return { plan, lastAt: turnAt, lead };
 }
 
 /// The beat a seat's most recent discard sits on, or null if it has none.
@@ -1288,12 +1321,6 @@ function renderPond(frame, discards, rotDeg, seat) {
   const rows = Math.max(1, Math.min(5, Math.ceil(n / 6)));
   const rotated = rotDeg === 90 || rotDeg === 270;
 
-  // Six to a row in the owner's frame, so the standard six-per-row pond grows
-  // away from the centre. The frame is sized to the *rotated* footprint.
-  const gridW = 6 * POND_TILE_W + 5 * POND_GAP;
-  const gridH = rows * POND_TILE_H + (rows - 1) * POND_GAP;
-  frame.style.width = (rotated ? gridH : gridW) + "px";
-  frame.style.height = (rotated ? gridW : gridH) + "px";
   grid.style.setProperty("--rot", rotDeg + "deg");
 
   const sideways = new Set();
@@ -1306,6 +1333,22 @@ function renderPond(frame, discards, rotDeg, seat) {
       sideways.add(i + 1);
     }
   });
+
+  // Six to a row in the owner's frame, so the standard six-per-row pond grows
+  // away from the centre. A sideways tile is `--pond-tile-h` wide while its box is
+  // `--pond-tile-w`, so the column holding one has to make room for it: with equal
+  // columns the tiles after it in the row started underneath it (the player saw
+  // them touching). Only that column grows — six columns of the wide size would
+  // not fit four ponds on a 1152-wide screen.
+  const cols = [];
+  for (let c = 0; c < 6; c++) {
+    cols.push([...sideways].some((i) => i % 6 === c) ? POND_TILE_H + 4 : POND_TILE_W);
+  }
+  grid.style.gridTemplateColumns = cols.map((w) => w + "px").join(" ");
+  const gridW = cols.reduce((a, b) => a + b, 0) + 5 * POND_GAP;
+  const gridH = rows * POND_TILE_H + (rows - 1) * POND_GAP;
+  frame.style.width = (rotated ? gridH : gridW) + "px";
+  frame.style.height = (rotated ? gridW : gridH) + "px";
 
   const last = n - 1;
   // A new hand starts with fewer discards than the last one ended with. The clock
@@ -1360,6 +1403,11 @@ function renderHand(view, human) {
   if (riichiMode && decision
       && !(decision.actions || []).some((a) => a.Discard && a.Discard.riichi)) {
     riichiMode = false;
+  }
+  // Same for a declined tsumo: the decision it belonged to is over.
+  if (tsumoDeclined && decision
+      && !(decision.actions || []).includes("Tsumo")) {
+    tsumoDeclined = false;
   }
   // `controlsHeld` covers the paced hold too: while the table is still playing
   // this batch's discards out, the hand must not take a click any more than the
@@ -1616,7 +1664,33 @@ function renderActions() {
     bar.appendChild(hint);
   }
 
-  if (acts.some((a) => a === "Tsumo")) add("自摸", "Tsumo", true);
+  if (acts.some((a) => a === "Tsumo")) {
+    if (tsumoDeclined) {
+      // Telling the player *why* the button is gone matters: the engine will not
+      // let them ron again until their next draw.
+      const note = document.createElement("span");
+      note.className = "call-hint";
+      note.textContent = "已放弃自摸：本巡不能荣和，请打一张牌";
+      bar.appendChild(note);
+    } else {
+      add("自摸", "Tsumo", true);
+    }
+    // 和了は任意 (docs/RULES.md §7.1): a player may pass on a cheap tsumo to wait for
+    // a better tile. Declining means discarding something else, so this only puts
+    // the win button away and says what it costs — and it can be taken back until
+    // a tile is actually played.
+    const skip = document.createElement("button");
+    skip.textContent = tsumoDeclined ? "取回自摸" : "跳过自摸";
+    skip.className = "pass";
+    skip.title = tsumoDeclined
+      ? "改回自摸和了"
+      : "放弃这次自摸（本巡内不能再荣和，可点牌打出别的）";
+    skip.addEventListener("click", () => {
+      tsumoDeclined = !tsumoDeclined;
+      render();
+    });
+    bar.appendChild(skip);
+  }
   if (acts.some((a) => a === "Ron")) add("荣和", "Ron", true);
   if (acts.some((a) => a === "Kyuushu")) add("九种九牌", "Kyuushu");
 
@@ -1759,6 +1833,8 @@ function absorbEvents(events) {
 }
 
 let headlineWatchdog = null;
+/// A shout waiting for the table to finish revealing its tiles.
+let headlineTimer = null;
 
 /// Play the staged shout and settlement, once the playback has reached the beat
 /// they belong to. A 荣和 waits for the tile it happened on; a 自摸 for the turn.
@@ -1771,8 +1847,21 @@ function showHeadline(kind) {
   const h = pendingHeadline;
   if (!h) return;
   if (kind && h.kind && kind !== h.kind) return;
+  // A shout names a tile, so nothing may still be hidden when it goes up: the
+  // rules of the playback say the tiles always land first, and this enforces it
+  // where the player can see it rather than trusting every plan to. It waits only
+  // while there is something to wait for, and never longer than a few beats, so a
+  // stuck queue cannot swallow a win.
+  const waiting = (h.wait || 0) + 80;
+  if (document.querySelector("#ring .pond-grid .tile.queued") && waiting <= pace() * 4) {
+    h.wait = waiting;
+    clearTimeout(headlineTimer);
+    headlineTimer = setTimeout(() => showHeadline(kind), 80);
+    return;
+  }
   pendingHeadline = null;
   clearTimeout(headlineWatchdog);
+  clearTimeout(headlineTimer);
   if (h.shout) announce(h.shout.text, h.shout.sub, h.shout.ms, h.shout.seat);
   if (!h.queue || !h.queue.length) return;
   clearTimeout(settleTimer);

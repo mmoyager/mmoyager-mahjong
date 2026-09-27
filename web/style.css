@@ -130,7 +130,13 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
 .pond-frame { position: relative; }
 .pond-grid {
   position: absolute; top: 50%; left: 50%;
-  display: grid; grid-template-columns: repeat(6, var(--pond-tile-w));
+  display: grid;
+  /* The column of a sideways tile has to grow: rotating a 25px tile inside a 25px
+     column makes its footprint 34px, and no margin can pull it back — it simply
+     overlaps the next column. `max-content` lets that one column take the width
+     its tile needs (its margin box) while every other column stays a tile wide,
+     and `renderPond` sizes the frame from the grid it gets. */
+  grid-template-columns: repeat(6, minmax(var(--pond-tile-w), max-content));
   gap: var(--pond-gap);
   transform: translate(-50%, -50%) rotate(var(--rot, 0deg));
 }
@@ -213,8 +219,21 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
   content: ""; position: absolute; left: 8%; right: 8%; bottom: -4px; height: 3px;
   border-radius: 2px; background: var(--gold);
 }
-/* 立直宣言牌 lies sideways in the pond, the way a real table reads it */
-.tile.rot { transform: rotate(90deg); margin: 3px calc(var(--w) * 0.2); }
+/* 立直宣言牌 lies sideways in the pond, the way a real table reads it.
+   The angle is a variable because every animated transform has to *include* it: a
+   keyframe that says `rotate(-9deg)` on its own drops the tile's 90°, so a riichi
+   declaration tile flew in upright and snapped sideways when it landed.
+   The side margins are what a sideways tile needs to sit in a row: its footprint
+   is `--h` wide while its box is `--w`, so it needs (--h - --w) / 2 on each side
+   plus a hair of clearance — with the old flat 20% the neighbour overlapped it. */
+.tile.rot {
+  --tile-rot: 90deg;
+  /* A sideways tile already has a wide silhouette: scaling it up as much as an
+     upright one makes it overlap the neighbours it is flying past. */
+  --fly-scale: 1.08;
+  transform: rotate(var(--tile-rot));
+  margin: 3px calc((var(--h) - var(--w)) / 2 + 2px);
+}
 /* A tile turned face down: 暗槓's two outer tiles. It keeps the same body and
    loses only the printed face, because which tile it is stays public knowledge. */
 .tile.down { background-image: url("/tiles/Back.svg?v=2"); }
@@ -243,15 +262,15 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
 /* The sideways tile of a called set. Its *slot* records which seat the tile came
    from (see meldGroup in app.js), never the direction of the tilt, so every
    called set turns the same way. 270deg matches the reference client 電脳麻将. */
-.melds .meld .tile.rot, .settle-hand .meld .tile.rot { transform: rotate(270deg); }
-/* 加杠: the added tile rides on top of the sideways tile. It is a child of that
-   tile, so it is counter-rotated to stay upright, and offset just enough that
-   both tiles stay legible — a real table stacks them flush, but a 24 px chip
-   that hides the tile underneath would hide which seat the 碰 came from. */
-.melds .meld .tile.rot > .tile.stacked, .settle-hand .meld .tile.rot > .tile.stacked {
-  position: absolute; inset: 0; z-index: 1;
-  transform: rotate(90deg) translate(-2px, -2px);
-  filter: drop-shadow(-2px 2px 2px rgba(0, 0, 0, 0.55));
+.melds .meld .tile.rot, .settle-hand .meld .tile.rot { --tile-rot: 270deg; }
+/* 加杠: the added tile lies *beside* the sideways tile, turned the same way, which
+   is what 電脳麻将 renders and what a player can actually read at this size — a
+   real table stacks the fourth tile on the sideways one, but a 24 px tile that
+   does exactly that hides the tile underneath, which is where the seat the 碰 came
+   from is recorded. The sideways tile keeps its slot either way, so nothing about
+   the source is lost. */
+.melds .meld .tile.rot + .tile.rot, .settle-hand .meld .tile.rot + .tile.rot {
+  margin-left: 1px;
 }
 /* A called set the table has not reached yet. In the layout, so nothing shifts
    when it arrives, but not visible — a call is an action like any other and waits
@@ -561,11 +580,13 @@ body.offline #action-bar button { opacity: 0.5; }
 .pond-grid .tile.flying { animation: tile-fly 0.26s cubic-bezier(0.24, 0.7, 0.34, 1); }
 @keyframes tile-fly {
   from { opacity: 0;
-         transform: translate(var(--fly-x, 0px), var(--fly-y, 0px)) scale(1.25)
-                    rotate(var(--fly-r, -9deg)); }
+         transform: translate(var(--fly-x, 0px), var(--fly-y, 0px))
+                    scale(var(--fly-scale, 1.25))
+                    rotate(calc(var(--tile-rot, 0deg) + var(--fly-r, -9deg))); }
   25%  { opacity: var(--tg-op, 1); }
-  75%  { transform: translate(0px, 0px) scale(1.04) rotate(0.6deg); }
-  to   { opacity: var(--tg-op, 1); transform: none; }
+  75%  { transform: translate(0px, 0px) scale(1.03)
+                    rotate(calc(var(--tile-rot, 0deg) + 0.6deg)); }
+  to   { opacity: var(--tg-op, 1); transform: rotate(var(--tile-rot, 0deg)); }
 }
 /* The tile the player has just drawn rises into the hand. Without it the 14th
    tile simply appears and the player has to recount the hand to find it. The

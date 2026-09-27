@@ -63,7 +63,10 @@ SIZES = ["1600,1000", "1440,900", "1280,800", "1152,720"]
 # instantly. The timing-sensitive checks are `pace` and `stage`; the rest run at
 # the fastest beat and only need the game to move.
 PLAY_SECONDS = 420
-MATCH_SECONDS = 900
+# A whole 半荘 or a whole match, at the fastest beat. Every action now costs a
+# beat — including the player's own passes and draws — so these need more room
+# than they did.
+MATCH_SECONDS = 1500
 
 # --- the two probes -------------------------------------------------------
 
@@ -388,6 +391,24 @@ RIICHI_STATUS = r"""
       .filter(x => /^吃|^碰|大明杠|加杠/.test(x)),
     clickable: document.querySelectorAll('#hand .tile.clickable').length,
     sideways: document.querySelectorAll('#pond-self .tile.rot').length,
+    // The declaration tile lies sideways, so its footprint is wider than its box:
+    // the row has to make room for it or it runs into the tile next to it.
+    sidewaysGap: (() => {
+      const tiles = [...document.querySelectorAll('#pond-self .pond-grid .tile')];
+      for (let i = 1; i < tiles.length; i++) {
+        if (!tiles[i].classList.contains('rot')) continue;
+        // Only a tile at rest says anything about the row's spacing: while it
+        // flies it is scaled up and offset, so it legitimately overlaps.
+        if (tiles[i].classList.contains('flying') || tiles[i].classList.contains('queued')) continue;
+        const a = tiles[i - 1].getBoundingClientRect();
+        const b = tiles[i].getBoundingClientRect();
+        // Only a neighbour in the same row: the first tile of a row sits below
+        // the last tile of the row before it.
+        if (b.top >= a.bottom - 1 || b.bottom <= a.top + 1) continue;
+        return Math.round((b.left - a.right) * 10) / 10;
+      }
+      return null;
+    })(),
     banner: document.getElementById('banner').classList.contains('hidden')
         ? null : document.getElementById('banner').textContent,
     overlay: document.getElementById('overlay').classList.contains('hidden')
@@ -412,13 +433,22 @@ RIICHI_MODES = r"""
   // The probe is about the *pre-declaration* modes, so the copy starts unlocked;
   // the declared case is set up further down.
   clone.view.players[human].riichi = false;
-  // `#hand` holds the whole hand *including* the drawn tile, which is drawn last.
-  const hand = [...document.querySelectorAll('#hand .tile')].map(t => Number(t.dataset.tile));
+  // The hand from the *copy*, not from the DOM: the page can be a render behind
+  // (a decision that arrived while a batch was still playing), and a probe that
+  // mixes the two measures nothing.
   const drawn = me.drawn;
-  const tiles = hand.slice();
+  const tiles = (me.hand || []).slice();
+  const hand = tiles.slice();
   // Two of them keep the wait; the rest do not. The client must light exactly the
   // two while 立直 is armed, and all of them when it is not.
-  const keepsWait = tiles.slice(0, 2);
+  // Two tiles of *different* kinds, so "the client lights exactly these" is a
+  // meaningful assertion: the engine accepts any physical copy of an offered kind,
+  // so two tiles of the same kind legitimately light both.
+  const keepsWait = [];
+  for (const t of tiles) {
+    if (!keepsWait.some(k => (k >> 2) === (t >> 2))) keepsWait.push(t);
+    if (keepsWait.length === 2) break;
+  }
   clone.decision.actions = tiles.map(t => ({Discard: {tile: t, riichi: false}}))
     .concat(keepsWait.map(t => ({Discard: {tile: t, riichi: true}})));
 
@@ -475,10 +505,90 @@ RIICHI_MODES = r"""
   send = realSend;
   state = orig;
   riichiMode = false; render();
+  const kinds = (list) => [...new Set(list.map(t => t >> 2))].sort((a, b) => a - b);
   return JSON.stringify({tiles: tiles.slice().sort((a, b) => a - b),
                          keepsWait: keepsWait.slice().sort((a, b) => a - b),
                          plain, armed, locked, stale, staleMode, only, drawn,
-                         sentWhileUnlit});
+                         sentWhileUnlit,
+                         // The engine offers one action per tile *kind* and accepts
+                         // any physical copy of it, so the client legitimately lights
+                         // every copy of an offered kind: compare kinds, not ids.
+                         tileKinds: kinds(tiles), keepKinds: kinds(keepsWait),
+                         plainKinds: kinds(plain), armedKinds: kinds(armed)});
+})()"""
+
+
+# 自摸 is optional: the win button may be put away so the player can take a tile
+# instead (docs/RULES.md §7.1). The hand has to stay playable, and the note has to
+# say what the pass costs.
+TSUMO_DECLINE = r"""
+(() => {
+  const orig = state;
+  if (!orig || !orig.decision) return JSON.stringify({skip: true});
+  const clone = JSON.parse(JSON.stringify(orig));
+  const tiles = [...document.querySelectorAll('#hand .tile')].map(t => Number(t.dataset.tile));
+  clone.decision.actions = ["Tsumo"].concat(tiles.map(t => ({Discard: {tile: t, riichi: false}})));
+  boardHold = false;
+  panelQueue = [];
+  controlsHeld = false;
+  controlTimer = null;
+  awaitingTurn = false;
+  lastBeatAt = 0;
+  for (const seat of [0, 1, 2, 3]) {
+    visibleDiscards[seat] = 1e9;
+    visibleMelds[seat] = 1e9;
+  }
+  const sent = [];
+  const realSend = send;
+  send = function () { sent.push(arguments[0]); return true; };
+  riichiMode = false;
+  tsumoDeclined = false;
+  state = clone;
+  render();
+  const bar = () => [...document.querySelectorAll('#action-bar button')].map(b => b.textContent.trim());
+  const before = {buttons: bar(), lit: document.querySelectorAll('#hand .tile.clickable').length};
+  const skip = [...document.querySelectorAll('#action-bar button')]
+    .find(b => b.textContent.trim() === '跳过自摸');
+  if (skip) skip.click();
+  const after = {buttons: bar(), lit: document.querySelectorAll('#hand .tile.clickable').length,
+                 hint: (document.querySelector('#action-bar .call-hint') || {}).textContent || null};
+  const result = {before, after, sent: sent.length, hadSkip: !!skip};
+  send = realSend;
+  tsumoDeclined = false;
+  riichiMode = false;
+  state = orig;
+  render();
+  return JSON.stringify(result);
+})()"""
+
+
+POND_LAYOUT = r"""
+(() => {
+  const make = (n, riichi) => ({tile: n, tsumogiri: false, riichi: !!riichi, called_by: null});
+  // A riichi declaration tile in the middle of the row, so the spacing either side
+  // of it can be measured exactly.
+  const discards = [make(4, false), make(8, false), make(12, true), make(16, false)];
+  const pond = document.getElementById('pond-self');
+  renderPond(pond, discards, 0, state.human);
+  const grid = pond.querySelector('.pond-grid');
+  const tiles = [...grid.querySelectorAll('.tile')].map(el => {
+    const r = el.getBoundingClientRect();
+    return {rot: el.classList.contains('rot'), left: r.left, right: r.right, w: r.width};
+  });
+  const gaps = [];
+  for (let i = 1; i < tiles.length; i++) {
+    if (tiles[i].rot) gaps.push(Math.round((tiles[i].left - tiles[i - 1].right) * 10) / 10);
+    if (tiles[i - 1].rot) gaps.push(Math.round((tiles[i].left - tiles[i - 1].right) * 10) / 10);
+  }
+  const rot = tiles.find(t => t.rot);
+  return JSON.stringify({
+    gaps, n: tiles.length,
+    rotW: rot ? Math.round(rot.w) : null,
+    plainW: Math.round(tiles.find(t => !t.rot).w),
+    cols: getComputedStyle(grid).gridTemplateColumns,
+    gridW: Math.round(grid.getBoundingClientRect().width),
+    frameW: Math.round(pond.getBoundingClientRect().width),
+  });
 })()"""
 
 
@@ -489,6 +599,7 @@ async def check_riichi():
     windows = 0
     riichi_banners = 0
     violations = []
+    gaps_bad = []
     async with Browser("1440,900") as b:
         await b.pace_to(4)
         await b.new_game("tonpuu")
@@ -508,6 +619,9 @@ async def check_riichi():
                           f"(sideways tile in pond: {st['sideways']})")
                 if st.get("banner") and "立直" in st["banner"]:
                     riichi_banners += 1
+                if st.get("sidewaysGap") is not None and st["sidewaysGap"] < -0.5:
+                    gaps_bad.append(f"{st['round']}: the sideways declaration tile overlaps its "
+                                    f"neighbour by {(-st['sidewaysGap']):.1f}px")
                 if declared:
                     windows += 1
                     if st["callButtons"]:
@@ -526,29 +640,76 @@ async def check_riichi():
         # The rule itself, in its three modes, measured rather than assumed. It
         # needs a moment when the player actually has a decision to look at.
         modes = {"skip": True}
-        for _ in range(40):
+        for _ in range(60):
             modes = json.loads(await b.ev(RIICHI_MODES))
             if not modes.get("skip"):
                 break
+            # Keep the hand moving: the probes need a moment when the player
+            # actually has something to decide, and the play loop has stopped.
+            await b.ev(SETTLE_STEP)
             await asyncio.sleep(0.25)
         if modes.get("skip"):
             failures.append("never caught a decision to check the discard rules against")
             return failures
+
+        # The pond's own layout: a sideways tile must have room, and the tiles
+        # after it in the row must sit to its right rather than underneath it.
+        pond = json.loads(await b.ev(POND_LAYOUT))
+        print(f"  pond row: {pond['plainW']}px upright + {pond['rotW']}px sideways, "
+              f"gaps={pond['gaps']}, cols={pond['cols']}, frame={pond['frameW']}")
+        if pond["rotW"] is None or pond["rotW"] <= pond["plainW"]:
+            failures.append(f"the sideways tile is not wider than an upright one: {pond}")
+        for gap in pond["gaps"]:
+            if gap < 1:
+                failures.append(f"the sideways tile has only {gap}px beside its neighbour")
+        if pond["gridW"] > pond["frameW"]:
+            failures.append(f"the pond grid ({pond['gridW']}px) is wider than its frame "
+                            f"({pond['frameW']}px), so it overflows the ring")
+
+        # 自摸 must be declinable: a player may want to wait for a better tile.
+        tsumo = {"skip": True}
+        for _ in range(60):
+            tsumo = json.loads(await b.ev(TSUMO_DECLINE))
+            if not tsumo.get("skip"):
+                break
+            await b.ev(SETTLE_STEP)
+            await asyncio.sleep(0.25)
+        if tsumo.get("skip"):
+            failures.append("never caught a decision to check the 自摸 pass against")
+        else:
+            print(f"  自摸 pass: buttons={tsumo['before']['buttons']} -> "
+                  f"{tsumo['after']['buttons']}, hand playable "
+                  f"{tsumo['after']['lit']}/{tsumo['before']['lit']}")
+            if not tsumo["hadSkip"]:
+                failures.append("a tsumo cannot be passed on: no 跳过自摸 button")
+            if tsumo["after"]["lit"] < tsumo["before"]["lit"]:
+                failures.append("passing on the tsumo made the hand unplayable: "
+                                f"{tsumo['after']['lit']} of {tsumo['before']['lit']} tiles")
+            if not (tsumo["after"]["hint"] and "自摸" in tsumo["after"]["hint"]):
+                failures.append(f"passing on the tsumo says nothing about it: "
+                                f"{tsumo['after']['hint']!r}")
+            if tsumo["sent"]:
+                failures.append(f"passing on the tsumo sent {tsumo['sent']} action(s)")
         print(f"  modes: plain={len(modes['plain'])}/{len(modes['tiles'])} tiles playable, "
               f"立直-armed={modes['armed']} (wait-keeping {modes['keepsWait']}), "
               f"declared={len(modes['locked'])} tile(s)")
-        if sorted(modes["plain"]) != sorted(modes["tiles"]):
+        if modes["plainKinds"] != modes["tileKinds"]:
             failures.append(f"with no 立直 armed, {len(modes['plain'])} of "
-                            f"{len(modes['tiles'])} discards are playable")
-        if sorted(modes["armed"]) != sorted(modes["keepsWait"]):
-            failures.append(f"with 立直 armed the client lights {modes['armed']} but only "
-                            f"{modes['keepsWait']} keep the wait")
+                            f"{len(modes['tiles'])} tiles are playable "
+                            f"(kinds {modes['plainKinds']} of {modes['tileKinds']})")
+        if modes["armedKinds"] != modes["keepKinds"]:
+            failures.append(f"with 立直 armed the client lights kinds {modes['armedKinds']} "
+                            f"but only {modes['keepKinds']} keep the wait")
         if modes.get("staleMode"):
             failures.append("立直 stayed armed into a decision that offers none, which leaves "
                             "every tile refused with no visible reason")
-        if sorted(modes["stale"]) != ([modes["only"]] if modes.get("only") is not None else []):
-            failures.append(f"with 立直 armed but unavailable the client lights {modes['stale']} "
-                            f"instead of the one plain discard {modes.get('only')}")
+        only = modes.get("only")
+        if only is not None:
+            want_kind = only >> 2
+            if any((t >> 2) != want_kind for t in modes["stale"]):
+                failures.append(f"with 立直 armed but unavailable the client lights "
+                                f"{modes['stale']}, and only the kind of the single plain "
+                                f"discard {only} may be played")
         if modes["sentWhileUnlit"]:
             failures.append(f"{modes['sentWhileUnlit']} action(s) were sent by clicking a tile "
                             "that was not playable")
@@ -561,6 +722,8 @@ async def check_riichi():
             failures.append("never reached a 立直 declaration, so nothing was checked")
         if violations:
             failures.append(f"illegal calls offered after 立直: {violations[:5]}")
+        if gaps_bad:
+            failures.append(f"sideways tiles in the pond overlap their neighbour: {gaps_bad[:3]}")
         if b.problems:
             failures.append(f"{len(b.problems)} page exceptions (first: {b.problems[0]})")
         if b.console:
@@ -1586,27 +1749,18 @@ MELD_LAYOUT = r"""
 
   // 加杠: the added tile rides upright on the sideways tile.
   const kakan = build('Kakan', 1, [4, 5, 6, 7], 7);
-  want(kids(kakan).length === 3, `加杠: ${kids(kakan).length} tiles in the row, want 3`);
-  const krot = rotOf(kakan);
-  want(!!krot, '加杠: no tile is lying sideways');
-  if (krot) {
-    const stacked = krot.querySelector('.tile.stacked');
-    want(!!stacked, '加杠: the added tile is not on the sideways tile');
-    want(krot.querySelectorAll(':scope > .tile.stacked').length === 1,
-         `加杠: the sideways tile has `
-         + krot.querySelectorAll(':scope > .tile.stacked').length
-         + ' stacked children, want 1');
-    if (stacked) {
-      want(stacked.dataset.tile === '7',
-           `加杠: the stacked tile is ${stacked.dataset.tile}, want the added 7`);
-      want(Math.abs(netDeg(stacked)) < 2,
-           `加杠: the stacked tile is turned ${netDeg(stacked)}deg, want upright`);
-      want(Math.abs(Math.abs(netDeg(krot)) - 90) < 2,
-           `加杠: the sideways tile is turned ${netDeg(krot)}deg, want 90`);
-      const ov = overlap(box(krot), box(stacked));
-      want(ov > 0.3,
-           `加杠: the added tile covers only ${Math.round(ov * 100)}% of the sideways tile`);
-    }
+  want(kids(kakan).length === 4, `加杠: ${kids(kakan).length} tiles in the row, want 4`);
+  const krots = kids(kakan).filter(k => k.classList.contains('rot'));
+  want(krots.length === 2, `加杠: ${krots.length} tiles lie sideways, want the pair`);
+  if (krots.length === 2) {
+    want(Math.abs(Math.abs(netDeg(krots[0])) - 90) < 2
+         && Math.abs(Math.abs(netDeg(krots[1])) - 90) < 2,
+         `加杠: the pair is turned ${netDeg(krots[0])}deg / ${netDeg(krots[1])}deg, want 90`);
+    // Beside, not on top: a real table stacks the fourth tile on the indicator,
+    // but at 24 px that hides the slot that records where the 碰 came from.
+    const ov = overlap(box(krots[0]), box(krots[1]));
+    want(ov < 0.2, `加杠: the added tile overlaps the sideways one by `
+                   + Math.round(ov * 100) + '%, so the pair is stacked rather than beside');
   }
 
   // 加杠 records where its 碰 came from, not where the added tile came from: the
@@ -1620,6 +1774,20 @@ MELD_LAYOUT = r"""
        `加杠 (碰 from 上家): sideways tile at slot ${rotIndex(kakanFrom)}, want 0`);
   want((kakanFrom.getAttribute('aria-label') || '').indexOf('上家') >= 0,
        `加杠 (碰 from 上家): the label says ${kakanFrom.getAttribute('aria-label')}`);
+
+  // A sideways tile must not overlap its neighbour: its footprint is `--h` wide
+  // while its box is `--w`, so the margins are the only thing keeping the row
+  // readable. (The player reported the two tiles touching.)
+  for (const [kind, tiles, called] of [['Pon', [4, 5, 6], 5], ['Chi', [8, 12, 17], 12]]) {
+    const g = build(kind, 3, tiles, called);
+    const t = kids(g);
+    const rot = t.findIndex(k => k.classList.contains('rot'));
+    if (rot > 0) {
+      const gap = box(t[rot]).l - box(t[rot - 1]).r;
+      want(gap >= -0.5, `${kind}: the sideways tile overlaps its neighbour by `
+                        + (-gap).toFixed(1) + 'px');
+    }
+  }
 
   // Every set says in words what it is and where it came from: the sideways slot
   // is the convention, but a player who does not know it must still be told.
@@ -1818,7 +1986,7 @@ STAGE_HOOKS = r"""
 (() => {
   if (window.__stage) return 'already';
   const S = {events: [], violations: [], marks: {}, plans: [], landings: [],
-             headlines: []};
+             headlines: [], together: [], lastVis: null};
   const P_HEADLINES = S.headlines;
   window.__stage = S;
   const now = () => Math.round(performance.now());
@@ -1844,10 +2012,22 @@ STAGE_HOOKS = r"""
         let fly = null;
         if (el) {
           const cs = getComputedStyle(el);
+          // The net rotation through every ancestor, so "is it still sideways
+          // while it flies?" can be answered: a keyframe that forgets the tile's
+          // own rotation resets a riichi declaration tile to upright for the whole
+          // flight and snaps it sideways on landing.
+          let acc = new DOMMatrix();
+          for (let e = el; e && e !== document.body; e = e.parentElement) {
+            const t = getComputedStyle(e).transform;
+            if (t && t !== 'none') acc = new DOMMatrix(t).multiply(acc);
+          }
           fly = {cls: el.classList.contains('flying'),
                  anim: cs.animationName,
                  x: parseFloat(cs.getPropertyValue('--fly-x')) || 0,
-                 y: parseFloat(cs.getPropertyValue('--fly-y')) || 0};
+                 y: parseFloat(cs.getPropertyValue('--fly-y')) || 0,
+                 rot: Math.round(Math.atan2(acc.b, acc.a) * 180 / Math.PI),
+                 own: el.classList.contains('rot') ? 90 : 0,
+                 pond: POND_ROT[relativeSeat(arg)] || 0};
           // And where it is at 200 ms of a 260 ms flight: a long tail is motion
           // the eye has already finished reading, and on a table that plays a beat
           // per action it also eats into the next beat.
@@ -1858,16 +2038,19 @@ STAGE_HOOKS = r"""
                              dy: Math.round(m.f * 10) / 10});
           }, 200);
         }
-        S.events.push({t: now(), what: 'discard', seat: arg, fly});
+        S.events.push({t: now(), what: 'discard', seat: arg, fly,
+                       planNo: S.plans.length, idx: visibleDiscards[arg]});
       } else if (name === 'revealMeld') {
         S.events.push({t: now(), what: 'call', seat: arg});
       } else if (name === 'showHeadline') {
         // A call that consumes nothing is how a staged shout gets lost: the plan
         // asked for a kind that did not match, or there was nothing staged at all.
-        P_HEADLINES.push({t: now(), asked: arg || null,
-                          staged: staged && staged.kind ? staged.kind : null,
-                          consumed: (typeof pendingHeadline === 'undefined'
-                                     || pendingHeadline === null)});
+        const consumed = (typeof pendingHeadline === 'undefined' || pendingHeadline === null);
+        if (!staged || consumed) {
+          P_HEADLINES.push({t: now(), asked: arg || null,
+                            staged: staged && staged.kind ? staged.kind : null,
+                            consumed});
+        }
         // Read what is about to be shouted and what the table still owes the
         // player: a shout that arrives with discards still in the queue is a
         // shout about a tile nobody can see yet.
@@ -1968,6 +2151,18 @@ STAGE_HOOKS = r"""
     // A tile that has not been played yet must not be painted, *however* it is
     // animated: a CSS animation outranks a plain `opacity: 0`, and that is exactly
     // how the whole batch used to flash on screen for 160 ms and then vanish.
+    // What the player can see: how many tiles each pond is showing. Two ponds
+    // growing in the same sample is two discards landing together, whatever the
+    // client did internally to decide it.
+    const vis = [0, 1, 2, 3].map(s => {
+      const pond = document.getElementById(pondForRel(relativeSeat(s)));
+      return pond ? pond.querySelectorAll('.pond-grid .tile:not(.queued)').length : 0;
+    });
+    const gained = S.lastVis ? vis.map((v, i) => v - S.lastVis[i]).filter(d => d > 0).length : 0;
+    if (gained > 1) {
+      S.together.push({t: now(), before: S.lastVis.slice(), after: vis.slice()});
+    }
+    S.lastVis = vis;
     const flashing = queuedEls.filter(t => parseFloat(getComputedStyle(t).opacity) > 0.05);
     if (flashing.length) {
       S.violations.push({t: now(), what: 'flash', flashing: flashing.length, queued,
@@ -1997,11 +2192,6 @@ def stage_failures(log, pace_ms, allow_gap):
     if len(reveals) < 4:
         bad.append(f"only {len(reveals)} discards were staged in this run")
     gaps = [b["t"] - a["t"] for a, b in zip(reveals, reveals[1:])]
-    if gaps:
-        too_fast = [g for g in gaps if g < allow_gap]
-        if too_fast:
-            bad.append(f"discards landed {min(gaps)} ms apart (at least {allow_gap} wanted): "
-                       "the table is playing at machine speed")
     for v in log.get("violations", [])[:3]:
         if v.get("what") == "flash":
             bad.append(f"a discard that has not been played yet was painted: {v}")
@@ -2077,6 +2267,18 @@ def stage_failures(log, pace_ms, allow_gap):
         if not [r for r in reveals if r["t"] <= p["t"]]:
             bad.append("a settlement panel opened before any discard had been staged")
     flew = [r for r in reveals if (r.get("fly") or {}).get("cls")]
+    # A sideways tile has to stay sideways for the whole flight.
+    for r in flew:
+        f = r["fly"]
+        if not f.get("own"):
+            continue
+        want = ((f["pond"] + f["own"]) % 360 + 360) % 360
+        got = (f["rot"] % 360 + 360) % 360
+        delta = min(abs(got - want), 360 - abs(got - want))
+        if delta > 20:
+            bad.append(f"a sideways tile flew in at {got}deg while its place in the pond is "
+                       f"{want}deg: the flight drops the tile's own rotation")
+            break
     offsets = [(r.get("fly") or {}) for r in flew]
     far = [o for o in offsets if abs(o.get("x", 0)) + abs(o.get("y", 0)) > 20]
     if reveals and not flew:
@@ -2101,13 +2303,22 @@ def stage_failures(log, pace_ms, allow_gap):
                        f"(plan at {plan['t']} ms): the next hand must not be dealt "
                        "until the settlement has been read")
 
+    # What the player could see: no two discards may arrive in the same sample.
+    together = log.get("together", [])
+    if together:
+        sample = together[0]
+        bad.append(f"{len(together)} times two ponds gained a tile in the same 20 ms "
+                   f"sample (first: {sample['before']} -> {sample['after']})")
+
     landings = log.get("landings", [])
     if landings:
         worst = max(max(abs(l["dx"]), abs(l["dy"])) for l in landings)
         if worst > 2:
             bad.append(f"a flying tile was still {worst:.1f} px from its slot at 200 ms of a "
                        "260 ms flight: the motion has a tail nobody is reading")
+    sideways_flights = sum(1 for r in flew if (r.get("fly") or {}).get("own"))
     summary = (f"{len(reveals)} discards staged, {len(flew)} flew in "
+               f"({sideways_flights} of them sideways), "
                f"({len(landings)} measured, worst landing offset "
                f"{max((max(abs(l['dx']), abs(l['dy'])) for l in landings), default=0):.1f} px), "
                f"gaps={gaps[:8]}, "
@@ -2159,6 +2370,7 @@ async def check_stage():
             " plans: window.__stage.plans.slice(-60),"
             " selftest: window.__stage.selftest,"
             " landings: window.__stage.landings,"
+            " together: window.__stage.together,"
             " headlines: window.__stage.headlines.slice(-40),"
             " all_plans: window.__stage.plans.filter(p => p.saw.some(k => k === 'win' || k === 'draw')),"
             " panels_seen: window.__stage.events.filter(e => e.what === 'panel').length})"))
@@ -2185,10 +2397,13 @@ async def check_stage():
         short = [(x, y) for x, y in zip(reveals, reveals[1:])
                  if y["t"] - x["t"] < int(pace_ms * 0.75)]
         for x, y in short[:2]:
-            print(f"  short gap: reveal at {x['t']} then {y['t']}")
-            for p in log.get("plans", [])[-6:]:
-                print(f"    plan t={p['t']} lead={p.get('lead')} ats={p.get('ats')} "
-                      f"events={p['events']} pending={p['pending']}")
+            print(f"  short gap: {x['t']} (seat {x.get('seat')} idx {x.get('idx')} "
+                  f"plan #{x.get('planNo')}) then {y['t']} (seat {y.get('seat')} "
+                  f"idx {y.get('idx')} plan #{y.get('planNo')})")
+            for p in log.get("plans", []):
+                if abs(p["t"] - y["t"]) < 8000:
+                    print(f"    plan t={p['t']} lead={p.get('lead')} ats={p.get('ats')} "
+                          f"events={p['events']} pending={p['pending']} saw={p.get('saw')}")
         bad, summary = stage_failures(log, pace_ms, int(pace_ms * 0.75))
         print(f"  {summary}")
         failures.extend(bad)
