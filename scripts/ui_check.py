@@ -898,6 +898,45 @@ async def check_panels():
         return failures
 
 
+# A settlement drawn over a known state: the totals it prints must be the seats'
+# scores, not those scores plus the hand's deltas. It used to add them, so every
+# payment was shown twice — an 8000 ron read as 16000 down, which is also how a
+# player could appear to have gone bankrupt when nobody had.
+SETTLE_MATH = r"""
+(() => {
+  const orig = state;
+  const clone = JSON.parse(JSON.stringify(orig));
+  const saved = clone.view.players.map(p => p.score);
+  clone.view.players[0].score = 25000;
+  clone.view.players[1].score = 32000;
+  clone.view.players[2].score = 25000;
+  clone.view.players[3].score = 18000;
+  state = clone;
+  boardHold = false;
+  panelQueue = [];
+  showWin({seat: 1, from: 0, tile: 4, riichi_sticks_taken: 0, paid: 8000,
+           pao_payer: null, nagashi: false, hand: [4, 8, 12], melds: [],
+           deltas: [-8000, 8000, 0, 0],
+           score: {yaku: [["Riichi", 1]], han: 1, fu: 40, yakuman: 0, base: 1300,
+                   is_dealer: false, dora_han: 0, ura_han: 0, aka_han: 0}});
+  const rows = [...document.querySelectorAll('#overlay-body table tr')];
+  const out = [];
+  for (const tr of rows) {
+    const td = [...tr.querySelectorAll('td')];
+    if (td.length >= 3) {
+      out.push({name: td[0].textContent.trim(),
+                delta: Number(td[1].textContent.replace(/[^0-9-]/g, '')),
+                total: Number(td[2].textContent.replace(/[^0-9-]/g, ''))});
+    }
+  }
+  document.getElementById('overlay').classList.add('hidden');
+  state = orig;
+  render();
+  return JSON.stringify({rows: out, before: saved,
+                         after: [25000, 32000, 25000, 18000]});
+})()"""
+
+
 # --- settlement checks ------------------------------------------------------
 
 # Measure the shade of a pond tile in each combination that the class names can
@@ -1071,6 +1110,22 @@ async def check_settle():
                         failures.append(f"win settlement has no score table: {after['text']}")
                     if after["tiles"] == 0:
                         failures.append(f"win settlement shows no hand ({title}): {after['text']}")
+                    # "结算后点数" must be the seat's score on the board, not that
+                    # score plus this hand's change: the state a settlement is drawn
+                    # over is the finished hand, so its scores are already settled.
+                    totals = json.loads(await b.ev("""JSON.stringify((() => {
+                        const rows = [...document.querySelectorAll('#overlay-body table tr')];
+                        const out = [];
+                        for (const tr of rows) {
+                          const td = [...tr.querySelectorAll('td')];
+                          if (td.length >= 3) out.push(Number(td[2].textContent.replace(/[^0-9-]/g, '')));
+                        }
+                        return {panel: out,
+                                board: state.view.players.map(p => p.score)};
+                    })())"""))
+                    if totals["panel"] and sorted(totals["panel"]) != sorted(totals["board"]):
+                        failures.append(f"the settlement's 结算后点数 {totals['panel']} does not match "
+                                        f"the board {totals['board']}: the hand is counted twice")
                     # The panel's tiles are created when it opens, and each face is
                     # an image probe: give them a moment to decode before judging,
                     # or a panel that opened a beat ago reads as blank tiles.
@@ -1112,6 +1167,21 @@ async def check_settle():
             print("  note: no hand was won by us in this run")
         if stats["own-draw"] == 0:
             print("  note: no hand ended on our own discard in this run")
+
+        # The settlement's arithmetic, against a state whose scores are known.
+        math = json.loads(await b.ev(SETTLE_MATH))
+        print(f"  settlement maths: {[(r['name'], r['delta'], r['total']) for r in math['rows']]}")
+        if len(math["rows"]) != 4:
+            failures.append(f"the settlement table has {len(math['rows'])} rows, want 4")
+        else:
+            for i, row in enumerate(math["rows"]):
+                want = math["after"][i]
+                if row["total"] != want:
+                    doubled = row["total"] == want + row["delta"]
+                    failures.append(
+                        f"结算后点数 for seat {i} is {row['total']}, want {want}"
+                        + (" (the hand's delta was added to a score that already "
+                           "includes it)" if doubled else ""))
 
         # An abortive draw ends the hand with the wall nearly full, which reads
         # as a bug unless the panel says who declared it, why, and how much wall

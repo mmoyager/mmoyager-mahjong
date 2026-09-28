@@ -2171,15 +2171,19 @@ function tableNode(html) {
 }
 
 /// A settlement table: what each seat gained or lost, and where they stand now.
-/// The scores shown are the totals *after* the hand, which is what a player
-/// actually wants to read at the end of a hand.
+///
+/// "结算后点数" is the table's own score, not the score plus the delta: the state
+/// a settlement is drawn over is the *finished* hand, so its scores already
+/// include this hand. Adding the delta counted every hand twice — a player who
+/// paid 8000 was shown as 16000 down, and a normal 1000-point payment could read
+/// as a score far below zero even though nobody had gone bankrupt.
 function scoreTable(deltas, withTotals) {
   if (!deltas) return "";
-  const before = (state && state.view && state.view.players)
+  const totals = (state && state.view && state.view.players)
     ? state.view.players.map((p) => p.score)
     : null;
   const rows = deltas.map((d, i) => {
-    const total = before && before[i] !== undefined ? `<td>${before[i] + d}</td>` : "";
+    const total = totals && totals[i] !== undefined ? `<td>${totals[i]}</td>` : "";
     return `<tr><td>${who(i)}</td>`
       + `<td class="${d > 0 ? "up" : (d < 0 ? "down" : "")}">${d > 0 ? "+" : ""}${d}</td>`
       + (withTotals ? total : "") + "</tr>";
