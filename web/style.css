@@ -403,6 +403,11 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
 /* A call on offer: the tiles it would take are ringed, the rest step back. */
 #hand.calling .tile:not(.hint) { filter: grayscale(0.5) brightness(0.8); }
 #hand .tile.hint { box-shadow: 0 0 0 2px var(--gold), 0 2px 4px rgba(0, 0, 0, 0.45); border-radius: 6px; }
+/* Every copy of the kind under the pointer, anywhere on the table. */
+.tile.same-kind {
+  box-shadow: 0 0 0 2px var(--gold), 0 2px 6px rgba(0, 0, 0, 0.5);
+  border-radius: 5px;
+}
 #hand-info { display: flex; flex-direction: column; gap: 4px; align-items: flex-end;
   font-size: 13px; color: var(--muted); min-width: 150px; }
 .flag { color: #ffb4b4; font-weight: 700; }

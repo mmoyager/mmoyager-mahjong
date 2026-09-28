@@ -327,6 +327,15 @@ function backRow(count, opts = {}) {
   return wrap;
 }
 
+/// Hovering a hand tile rings every copy of that kind on the table (see
+/// `highlightSameKind`). Registered once on the hand container, which outlives
+/// every redraw of its contents.
+document.addEventListener("mouseover", (e) => {
+  const t = e.target && e.target.closest ? e.target.closest("#hand .tile") : null;
+  highlightSameKind(t ? Number(t.dataset.kind) : null);
+});
+document.addEventListener("mouseleave", () => highlightSameKind(null), true);
+
 // ---------------------------------------------------------------- networking
 
 // The last game the player asked for, so a reconnect can rebuild it instead of
@@ -1484,6 +1493,26 @@ function renderPond(frame, discards, rotDeg, seat) {
     grid.children[r].appendChild(tileEl(d.tile, { small: true, extra }));
   });
 
+}
+
+/// Every tile of one kind on the table gets a ring while the pointer rests on a
+/// hand tile, so "how many 5m are out?" is answerable without counting.
+///
+/// This is the on-demand family of assists that MJ (hold a tile -> every copy
+/// turns red) and 麻雀格闘倶楽部 (hold a tile -> matching tiles turn green) use
+/// instead of an always-on highlight: it costs no screen space and it appears at
+/// the moment the question is asked. A desktop client has no "hold", so hovering
+/// the hand is the gesture. The lookup is a plain attribute query, so it stays
+/// correct after any pond or meld is redrawn.
+let highlightedKind = null;
+
+function highlightSameKind(kind) {
+  if (highlightedKind === kind) return;
+  highlightedKind = kind;
+  document.querySelectorAll(".tile.same-kind").forEach((el) => el.classList.remove("same-kind"));
+  if (kind === null || kind === undefined) return;
+  document.querySelectorAll(`.tile[data-kind="${kind}"]`)
+    .forEach((el) => el.classList.add("same-kind"));
 }
 
 /// The drawn tile currently on screen, so the rise-in animation runs once per
