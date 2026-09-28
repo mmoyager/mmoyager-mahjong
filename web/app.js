@@ -1974,9 +1974,15 @@ function absorbEvents(events) {
     const riichi = events.filter((e) => e.Riichi);
     if (riichi.length) {
       const who1 = riichi.map((e) => botNames[e.Riichi.seat] || "对手").join("、");
-      // The seat of the (first) declarer is where the banner belongs.
-      pendingHeadline = { kind: "riichi",
-                          shout: { text: "立直", sub: who1, seat: riichi[0].Riichi.seat } };
+      // Shouted straight away, at the declaring seat.
+      //
+      // It used to be staged for a beat of the playback plan and shown only once
+      // no pond tile was still hidden. That made sense when the client was
+      // animating a batch that had already happened; now the server sends one beat
+      // per action, so the declaration and the tile it belongs to arrive together
+      // and there is nothing to wait for — the deferral only delayed the shout, and
+      // a later batch would sometimes replace it before it ever ran.
+      announce("立直", who1, undefined, riichi[0].Riichi.seat);
     }
     return;
   }
