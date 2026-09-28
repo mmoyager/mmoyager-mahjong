@@ -852,7 +852,42 @@ async def check_panels():
         await b.pace_to(4)
         await b.new_game("tonpuu")
 
-        # 1. the shortcut dialog
+        # 1. the match-result panel, rendered from synthetic scores. Driving a
+        #    real 撃飛 finish needs a whole match, and the point being checked is
+        #    the label: whoever is below zero must be named as 撃飛, and a match
+        #    that ended with everyone solvent must not claim otherwise. The
+        #    settlement bug printed `score + delta`, which showed a negative
+        #    number for a purse that had never gone negative — this is the panel
+        #    that has to answer "why did the match stop".
+        end_panel = json.loads(await b.ev("""JSON.stringify((() => {
+            const render = (scores) => {
+                const ranking = [0, 1, 2, 3].sort((a, b) => scores[b] - scores[a]);
+                showGameEnd({ranking, scores, rounds: 8});
+                const title = document.getElementById('overlay-title').textContent;
+                const body = document.getElementById('overlay-body').textContent;
+                dismissPanel();
+                panelQueue = [];
+                return {title, body};
+            };
+            return {flown: render([31000, 22000, 52000, -5000]),
+                    solvent: render([31000, 22000, 52000, 5000])};
+        })())"""))
+        print(f"  end panel: 撃飛 header={('点数低于 0' in end_panel['flown']['body'])} "
+              f"tag={('撃飛' in end_panel['flown']['body'])} "
+              f"clean={('撃飛' not in end_panel['solvent']['body'])}")
+        if end_panel["flown"]["title"] != "对局结束":
+            failures.append(f"the result panel is titled "
+                            f"{end_panel['flown']['title']!r}")
+        if "撃飛" not in end_panel["flown"]["body"]:
+            failures.append("a purse below zero is not named as 撃飛 in the result panel: "
+                            + end_panel["flown"]["body"][:100])
+        if "点数低于 0" not in end_panel["flown"]["body"]:
+            failures.append("the result panel does not say which purse went below zero")
+        if "撃飛" in end_panel["solvent"]["body"]:
+            failures.append("a match where nobody went below zero claims 撃飛: "
+                            + end_panel["solvent"]["body"][:100])
+
+        # 2. the shortcut dialog
         await b.ev("document.getElementById('keys-btn').click()")
         dlg = json.loads(await b.ev("""JSON.stringify({
             open: !document.getElementById('overlay').classList.contains('hidden'),
@@ -863,7 +898,7 @@ async def check_panels():
             failures.append(f"the shortcut dialog did not open properly: {dlg}")
         await b.ev("document.getElementById('overlay-close').click()")
 
-        # 2. wait for a call window (the action bar only exists when there is a
+        # 3. wait for a call window (the action bar only exists when there is a
         #    decision to make), then ask for a hint on top of it
         t0 = time.time()
         armed = False
@@ -901,7 +936,7 @@ async def check_panels():
         if r["handArea"]["clipped"]:
             failures.append("the hand area clips its contents")
 
-        # 3. five dora indicators (four kans) must still fit the centre panel
+        # 4. five dora indicators (four kans) must still fit the centre panel
         fits = json.loads(await b.ev("""JSON.stringify((() => {
             const d = document.getElementById('dora-tiles');
             const before = d.innerHTML;
@@ -917,7 +952,7 @@ async def check_panels():
         if fits["over"] > 0:
             failures.append(f"five dora indicators overflow the centre by {fits['over']}px")
 
-        # 4. the replay / analysis panel
+        # 5. the replay / analysis panel
         await b.ev("document.getElementById('btn-replays').click()")
         await asyncio.sleep(1.0)
         rep = json.loads(await b.ev("""JSON.stringify({
@@ -1529,6 +1564,10 @@ SEAT_STATUS = r"""
   panel: document.getElementById('overlay').classList.contains('hidden')
       ? null : document.getElementById('overlay-title').textContent,
   ranking: document.querySelectorAll('#overlay-body table tr').length,
+  panelBody: document.getElementById('overlay').classList.contains('hidden')
+      ? null : document.getElementById('overlay-body').textContent,
+  finalScores: state && state.view && state.view.phase && state.view.phase.GameEnd
+      ? null : null,
 }))()"""
 
 
@@ -1608,6 +1647,21 @@ async def check_seats():
         # zero, and that is a legitimate finish with a ranking panel.
         elif not reached_south:
             print("  note: the half game ended before 南 (撃飛 or アガリやめ)")
+        if final and final["ranking"] >= 4:
+            # When a match ends because a purse went below zero, the panel has to
+            # say so. The settlement bug printed `score + delta`, which showed a
+            # negative number for a purse that had never gone negative, and the
+            # player was left asking why the match had stopped. Count the seats
+            # below zero straight from the view, then look for the label.
+            below = json.loads(await b.ev(
+                "JSON.stringify(state.view.players.filter(p => p.score < 0).length)"))
+            body = final.get("panelBody") or ""
+            if below and "撃飛" not in body:
+                failures.append(f"{below} seat(s) finished below zero but the final panel "
+                                f"does not say 撃飛: {body[:80]!r}")
+            elif below:
+                print(f"  the match ended on 撃飛 ({below} seat(s) below zero) and the "
+                      f"panel says so")
         if b.problems:
             failures.append(f"{len(b.problems)} page exceptions (first: {b.problems[0]})")
         if b.console:

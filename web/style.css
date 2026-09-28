@@ -473,6 +473,13 @@ table.rep tr.me td { color: var(--gold); }
 .self-badge { display: flex; align-items: center; gap: 5px; font-size: 13px; }
 .self-badge .ippatsu-tag { font-size: 11px; padding: 0 4px; border-radius: 4px; color: var(--gold); }
 
+/* 撃飛: the match ended because this purse went below zero, not because the last
+   hand was played out. Sized like the other tags so the ranking stays a table. */
+.tobi-tag {
+  font-size: 10px; padding: 0 4px; border-radius: 4px;
+  background: #c0392b; color: #fff; vertical-align: 1px;
+}
+
 /* Keyboard focus must be visible: the whole table is playable with Tab + Enter. */
 button:focus-visible, .tile:focus-visible, a.navlink:focus-visible, select:focus-visible {
   outline: 2px solid var(--gold); outline-offset: 2px;

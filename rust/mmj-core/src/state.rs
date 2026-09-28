@@ -2659,6 +2659,40 @@ mod tests {
         let _ = before;
     }
 
+    /// 撃飛 (tobi): a player is out only when their purse goes *below* zero. A
+    /// score of exactly 0 keeps the match alive — the same reading as 天鳳 and
+    /// 雀魂 (docs/RULES.md §9). Reported from play as "someone had not flown but
+    /// the match ended as if they had", so the boundary is pinned here: the
+    /// settlement panel used to print `score + delta`, which for a losing hand
+    /// showed a negative number for a purse that was never negative at all.
+    #[test]
+    fn a_purse_of_exactly_zero_does_not_end_the_match() {
+        let end_after_draw = |score: i32| {
+            let mut t = table(41);
+            set_hand(&mut t, 0, "123m456m678p11p23s");
+            for s in 1..4 {
+                set_hand(&mut t, s, "123m456m678p1z2z4z9s");
+            }
+            t.players[3].score = score;
+            t.end_exhaustive();
+            // 荒牌流局 settles the tenpai payments, so read the purse back before
+            // asking whether the table moved on.
+            let purse = t.players[3].score;
+            let next = t.resume_round_end();
+            (purse, matches!(t.phase, Phase::GameEnd), next)
+        };
+
+        // Seat 3 is not tenpai, so the 荒牌流局 不聴 penalty takes 1000 from it:
+        // 1000 lands the purse on exactly 0, and 0 does not end the match.
+        let (purse, over, _) = end_after_draw(1000);
+        assert_eq!(purse, 0, "1000 less the 1000 不聴 penalty");
+        assert!(!over, "a purse that lands on 0 is not 撃飛: the next hand is dealt");
+
+        let (purse, over, _) = end_after_draw(0);
+        assert_eq!(purse, -1000, "0 less the penalty");
+        assert!(over, "below zero ends the match");
+    }
+
     /// Self-play and the tests play straight through: the pause is opt-in.
     #[test]
     fn rounds_still_advance_by_default() {

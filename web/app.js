@@ -2233,9 +2233,20 @@ function showGameEnd(msg) {
   }
   clearTimeout(settleTimer);
   holdBoard();
-  const rows = msg.ranking.map((seat, place) =>
-    `<tr><td>${place + 1} 位</td><td>${who(seat)}</td><td>${msg.scores[seat]}</td></tr>`).join("");
-  let body = `<p>共 ${msg.rounds} 局</p>`;
+  // Why the match ended matters to the player: a purse below zero is 撃飛 (the
+  // match stops there), while the other endings — the last hand played out,
+  // アガリやめ, テンパイやめ — are all just "the match is over". Saying which one
+  // it was costs nothing and answers the "why did it stop when nobody had flown"
+  // question directly, so the negative purse is named rather than inferred.
+  const flown = msg.ranking.filter((seat) => msg.scores[seat] < 0);
+  const rows = msg.ranking.map((seat, place) => {
+    const tag = msg.scores[seat] < 0 ? ' <span class="tobi-tag">撃飛</span>' : "";
+    return `<tr><td>${place + 1} 位</td><td>${who(seat)}</td>`
+      + `<td>${msg.scores[seat]}${tag}</td></tr>`;
+  }).join("");
+  let body = `<p>共 ${msg.rounds} 局`
+    + (flown.length ? ` · ${flown.map((s) => who(s)).join("、")} 点数低于 0（撃飛），对局结束` : "")
+    + `</p>`;
   body += `<table><tr><th>名次</th><th>玩家</th><th>终局点数</th></tr>${rows}</table>`;
   if (msg.replay) body += `<p style="opacity:.7">牌谱已保存：${esc(msg.replay)}</p>`;
   panelQueue.push({ kind: "end", title: "对局结束", body });
