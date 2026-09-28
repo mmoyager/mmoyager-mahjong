@@ -70,6 +70,20 @@ const POND_ROT = { 0: 0, 1: 270, 2: 180, 3: 90 };
 // ---------------------------------------------------------------- utilities
 
 function kindOf(tile) { return tile >> 2; }
+
+/// What an indicator tile makes the dora. The next tile of the same suit, with
+/// 9 -> 1 and 北 -> 東 at the ends (docs/RULES.md §5: 王牌 wraps within its suit
+/// and the four winds wrap 北→東). Worth spelling out: the indicator is the only
+/// part of the wall a player has to translate in their head, and a client that
+/// says "this means 4s" is doing the one useful thing it can with the space.
+function doraFromIndicator(kind) {
+  if (kind < 27) {
+    const base = kind - (kind % 9);
+    return base + ((kind % 9) + 1) % 9;
+  }
+  if (kind < 31) return 27 + ((kind - 27 + 1) % 4);   // 東南西北 wrap
+  return 31 + ((kind - 31 + 1) % 3);                 // 白發中 wrap
+}
 function isAka(tile) { return tile === 16 || tile === 52 || tile === 88; }
 
 /// The engine labels actions compactly and in its own notation (`E` is 東, `0p`
@@ -564,7 +578,12 @@ function render() {
   const doraBox = document.getElementById("dora-tiles");
   doraBox.setAttribute("aria-label", "宝牌指示牌");
   doraBox.innerHTML = "";
-  view.dora_indicators.forEach((t) => doraBox.appendChild(tileEl(t, { small: true })));
+  view.dora_indicators.forEach((t) => {
+    const el = tileEl(t, { small: true });
+    const dora = doraFromIndicator(kindOf(t));
+    el.title = `宝牌指示牌 ${tileName(t)} → 宝牌 ${tileName(dora * 4)}`;
+    doraBox.appendChild(el);
+  });
 
   // Relative seat: 0 self, 1 right (plays next), 2 across, 3 left. Each seat owns
   // a box (for self, only the hand area) and a pond inside the centre ring.

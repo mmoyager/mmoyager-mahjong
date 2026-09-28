@@ -780,10 +780,12 @@ body.offline #action-bar button { opacity: 0.5; }
 /* ---------- smaller windows ---------- */
 /* A short or narrow window steps every piece down one size, the way 雀魂 scales
    its table. The tallest thing on the felt is a side player's hand — thirteen
-   backs at `--back-w` plus the gap, 466px at the full size — and with the ponds
-   and the observer's own hand at full size the ring grew past its row and put the
-   action bar behind the seat readouts on a 1152x720 window. */
-@media (max-width: 1280px), (max-height: 800px) {
+   backs at `--back-step` — and with the ponds and the observer's own hand at full
+   size the ring grew past its row and put the action bar behind the seat readouts.
+   The breakpoint is deliberately generous: at 1440x900 the ring's content came
+   within a few pixels of the action bar, so whether it fit depended on how many
+   rows the ponds happened to have that hand. */
+@media (max-width: 1440px), (max-height: 900px) {
   /* Only the two things `renderPond` does not size itself: the pond geometry is
      read once by app.js at boot, so a media query that changed it would leave the
      frames sized for the old tiles. What has to give on a short window is the

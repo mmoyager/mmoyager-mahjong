@@ -3835,6 +3835,7 @@ mod tests {
         t.phase = Phase::Turn { seat: 0 };
         t.refresh_decisions();
         let score_before = t.players[0].score;
+        let winner_before = t.players[1].score;
         t.submit(
             0,
             Action::Discard {
@@ -3854,9 +3855,66 @@ mod tests {
         t.submit(1, Action::Ron).unwrap();
         assert!(!t.players[0].riichi, "the riichi never took effect");
         assert_eq!(t.riichi_sticks, 0, "no stick is placed");
-        // The 1000 points came back; only the ron payment left the purse.
-        assert!(t.players[0].score < score_before);
-        assert_eq!(score_before - t.players[0].score, 1000 + 1000);
+        // 立直宣言牌で放銃: the 1000 points came back, so the declarer pays the ron
+        // and nothing else. The assertion that used to stand here read
+        // `1000 + 1000`, which is the right *number* for this hand for the wrong
+        // reason — this is a 2000-point ron (平和 + 赤5), so the declarer's loss is
+        // the ron alone. Measuring "the declarer paid exactly what the winner
+        // collected" cannot drift with the hand's value, and it is the property
+        // that matters: no 1000 points vanish into the void stick.
+        let won = t.players[1].score - winner_before;
+        assert_eq!(won, 2000, "平和 + 赤5 on a closed ron");
+        assert_eq!(
+            score_before - t.players[0].score,
+            won,
+            "and the declarer paid exactly that"
+        );
+        assert_eq!(
+            t.players.iter().map(|p| p.score).sum::<i32>() + t.riichi_sticks as i32 * 1000,
+            100_000,
+            "the table still holds every point"
+        );
+    }
+
+    /// The other half of the same rule: a declaration tile that is *called* keeps
+    /// its 立直. The player goes on playing with the stick in the pot, and the next
+    /// discard is the sideways one.
+    #[test]
+    fn a_called_riichi_discard_keeps_its_stick() {
+        let mut t = table(23);
+        set_hand(&mut t, 0, "123m456m678p11p234s");
+        t.players[0].drawn = Some(tile("4s", 1));
+        t.players[0].hand_tiles.push(tile("4s", 1));
+        set_hand(&mut t, 1, "123m456m678p22s4s4s");
+        set_hand(&mut t, 2, "123m456m678p1z2z4z9s");
+        set_hand(&mut t, 3, "123m456m678p1z2z5z9s");
+        t.phase = Phase::Turn { seat: 0 };
+        t.refresh_decisions();
+        let score_before = t.players[0].score;
+        t.submit(
+            0,
+            Action::Discard {
+                tile: tile("4s", 1),
+                riichi: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(t.riichi_sticks, 1);
+        let pon = t
+            .decisions()
+            .iter()
+            .find(|d| d.seat == 1)
+            .and_then(|d| {
+                d.actions.iter().find_map(|a| match a {
+                    Action::Meld { meld } if meld.kind == MeldKind::Pon => Some(*a),
+                    _ => None,
+                })
+            })
+            .expect("seat 1 may pon the declaration tile");
+        t.submit(1, pon).unwrap();
+        assert!(t.players[0].riichi, "a called declaration still stands");
+        assert_eq!(t.riichi_sticks, 1, "and its stick stays in the pot");
+        assert_eq!(t.players[0].score, score_before - 1000, "paid once");
     }
 
     #[test]
