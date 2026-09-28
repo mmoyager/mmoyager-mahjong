@@ -472,6 +472,13 @@ let deltaTimer = null;
 /// True until the first view of a session has been drawn; see `render`.
 let firstLook = true;
 
+/// 25000 -> "25,000". Scores are the most-read number on the table and five
+/// digits in a row is the least readable form of them (電脳麻将 prints "東: 25,000"
+/// for the same reason).
+function withSeparators(n) {
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
 function render() {
   if (!state) return;
   const view = state.view;
@@ -555,6 +562,7 @@ function render() {
   renderCentreSeats(view, human);
 
   const doraBox = document.getElementById("dora-tiles");
+  doraBox.setAttribute("aria-label", "宝牌指示牌");
   doraBox.innerHTML = "";
   view.dora_indicators.forEach((t) => doraBox.appendChild(tileEl(t, { small: true })));
 
@@ -759,12 +767,12 @@ function centreSeat(seat, p, view, isSelf) {
   box.title = scoreContext(p, view);
   const score = document.createElement("span");
   score.className = "score";
-  score.textContent = p.score;
+  score.textContent = withSeparators(p.score);
   box.appendChild(score);
   if (deltaScores && deltaScores[seat]) {
     const d = document.createElement("span");
     d.className = "delta " + (deltaScores[seat] > 0 ? "up" : "down");
-    d.textContent = (deltaScores[seat] > 0 ? "+" : "") + deltaScores[seat];
+    d.textContent = (deltaScores[seat] > 0 ? "+" : "") + withSeparators(deltaScores[seat]);
     box.appendChild(d);
   }
   if (p.is_dealer) {
@@ -1364,6 +1372,7 @@ function announceCall(seat, kind) {
 function renderPond(frame, discards, rotDeg, seat) {
   const grid = frame.querySelector(".pond-grid");
   if (!grid) return;
+  grid.setAttribute("aria-label", seat === undefined ? "牌河" : `${seatName(seat)}的牌河`);
   grid.innerHTML = "";
   const n = discards.length;
   const rows = Math.max(1, Math.min(5, Math.ceil(n / 6)));
@@ -2271,9 +2280,9 @@ function scoreTable(deltas, withTotals) {
     ? state.view.players.map((p) => p.score)
     : null;
   const rows = deltas.map((d, i) => {
-    const total = totals && totals[i] !== undefined ? `<td>${totals[i]}</td>` : "";
+    const total = totals && totals[i] !== undefined ? `<td>${withSeparators(totals[i])}</td>` : "";
     return `<tr><td>${who(i)}</td>`
-      + `<td class="${d > 0 ? "up" : (d < 0 ? "down" : "")}">${d > 0 ? "+" : ""}${d}</td>`
+      + `<td class="${d > 0 ? "up" : (d < 0 ? "down" : "")}">${d > 0 ? "+" : ""}${withSeparators(d)}</td>`
       + (withTotals ? total : "") + "</tr>";
   }).join("");
   const head = withTotals ? "<tr><th>玩家</th><th>本局增减</th><th>结算后点数</th></tr>"
@@ -2302,7 +2311,7 @@ function showGameEnd(msg) {
   const rows = msg.ranking.map((seat, place) => {
     const tag = msg.scores[seat] < 0 ? ' <span class="tobi-tag">撃飛</span>' : "";
     return `<tr><td>${place + 1} 位</td><td>${who(seat)}</td>`
-      + `<td>${msg.scores[seat]}${tag}</td></tr>`;
+      + `<td>${withSeparators(msg.scores[seat])}${tag}</td></tr>`;
   }).join("");
   let body = `<p>共 ${msg.rounds} 局`
     + (flown.length ? ` · ${flown.map((s) => who(s)).join("、")} 点数低于 0（撃飛），对局结束` : "")

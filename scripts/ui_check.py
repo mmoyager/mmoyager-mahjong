@@ -1624,7 +1624,7 @@ async def check_seats():
             if st["centreBlocks"] != 4:
                 failures.append(f"seat {seat}: {st['centreBlocks']} seat readouts in the "
                                 f"ring, so someone's points are missing")
-            shown = [int(x) for x in st["centreScores"] if x not in (None, "")]
+            shown = [int(x.replace(",", "")) for x in st["centreScores"] if x not in (None, "")]
             if st["viewScores"] and shown != st["viewScores"]:
                 failures.append(f"seat {seat}: the ring shows {shown} but the scores are "
                                 f"{st['viewScores']}")
