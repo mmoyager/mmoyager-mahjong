@@ -125,11 +125,21 @@ FIT_PROBE = r"""
     if (overlaps(box, rect('#hand-area'))) hits.push('hand-area');
     return {id: el.id, box, hits};
   });
+  // The ring's own contents must clear the action bar too. The bar is not
+  // overlapped by anything "overflowing" in the document sense — the ring simply
+  // centres its content and the bottom pond can land on top of it.
+  const barBox = rect('#action-bar');
+  const ringHits = [];
+  for (const sel of ['#pond-across', '#pond-left', '#pond-right', '#pond-self',
+                     '#centre-panel', ...seats.map(s => '#' + s.id)]) {
+    if (overlaps(rect(sel), barBox)) ringHits.push(sel);
+  }
   return JSON.stringify({
     size: [w, h],
     doc: [document.documentElement.scrollWidth, document.documentElement.scrollHeight],
     badCount: bad.length, bad: bad.slice(0, 5),
     bar: rect('#action-bar'), hand: rect('#hand-area'), buttons,
+    ringHits,
     seats,
     handTiles: document.querySelectorAll('#hand .tile').length,
     handTile: rect('#hand .tile'),
@@ -333,6 +343,9 @@ async def check_fit():
             if side["self"][1] >= side["self"][0] or side["across"][1] >= side["across"][0]:
                 flag = "BAD"
                 failures.append(f"{size}: self/across ponds are not horizontal: {side}")
+            if r["ringHits"]:
+                flag = "BAD"
+                failures.append(f"{size}: the action bar is covered by {r['ringHits']}")
             if len(r["seats"]) != 4:
                 flag = "BAD"
                 failures.append(f"{size}: {len(r['seats'])} seat readouts in the ring, want 4")

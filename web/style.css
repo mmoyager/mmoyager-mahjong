@@ -17,6 +17,8 @@
      so the tile size has exactly one source of truth. */
   --pond-tile-w: 32px;
   --pond-tile-h: 43px;
+  --dial: 132px;
+  --back-step: 36px;
   --pond-gap: 2px;
 }
 
@@ -91,9 +93,10 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
 .seat-across { grid-area: across; }
 .seat-left { grid-area: lseat; align-self: center; align-items: flex-end; }
 .seat-right { grid-area: rseat; align-self: center; align-items: flex-start; }
-/* Whose turn it is: the box is gone, so the highlight rides the tiles. */
+/* Whose turn it is: the glow rides the tile backs and the readout lights up. A
+   tint behind the whole seat painted a slab down the felt — the seat box is as
+   tall as the ring, so "a subtle background" was a 340px rectangle. */
 .seat.turn .back { filter: drop-shadow(0 0 5px rgba(255, 209, 102, 0.85)); }
-.seat.turn { background: rgba(255, 209, 102, 0.07); box-shadow: inset 0 0 0 1px rgba(255, 209, 102, 0.28); }
 
 /* ---------- the ring of discards ---------- */
 /* The middle of the table: the centre panel with one seat readout on each edge.
@@ -116,7 +119,7 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
    to the screen edges and left the felt empty. */
 #ring {
   grid-area: ring;
-  display: grid; gap: 8px 16px; min-height: 0;
+  display: grid; gap: 6px 14px; min-height: 0;
   align-content: center; justify-content: center; justify-items: center;
   grid-template-columns: auto auto auto auto auto;
   grid-template-rows: auto auto auto;
@@ -177,10 +180,9 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
   background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(46, 125, 85, 0.55); border-radius: 14px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
-/* The round reads as one line — a big wind with the hand beside it, 東1局 — rather
-   than a wind with a caption underneath. */
-#centre-head { display: flex; align-items: center; gap: 7px; }
-#centre-wind { font-size: 40px; font-weight: 700; color: var(--gold); line-height: 1; }
+/* Inside the dial: the round wind, the hand, and how much wall is left, stacked in
+   the middle of the ring. */
+#centre-wind { font-size: 34px; font-weight: 700; color: var(--gold); line-height: 1; }
 
 /* One seat's readout: the wind it holds, who it is, and its points, in the ring
    corner one step clockwise from that seat. Every seat gets the same shape, so
@@ -239,7 +241,7 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
 .centre-seat .delta { font-size: 11px; font-weight: 700; margin-left: 2px; }
 .centre-seat .delta.up { color: #7fd99a; }
 .centre-seat .delta.down { color: #ff8a80; }
-#centre-round { font-size: 12px; color: var(--muted); }
+#centre-round { font-size: 12px; color: var(--muted); text-align: center; }
 .centre-block { text-align: center; }
 .centre-block .label { font-size: 11px; color: var(--muted); margin-bottom: 3px; }
 /* 雀魂 shows the dora indicators bare: the tiles say what they are, and a caption
@@ -248,9 +250,25 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
 #dora-tiles { justify-content: center; }
 #dora-tiles .tile { --w: 30px; --h: 40px; }
 .sticks-row:empty { display: none; }
-#centre-wall { width: 100%; text-align: center; font-size: 11px; color: var(--muted); }
-.wall-bar { margin-top: 5px; height: 4px; border-radius: 2px; background: rgba(255,255,255,0.12); overflow: hidden; }
-.wall-bar i { display: block; height: 100%; width: 100%; background: var(--gold); transition: width 0.3s ease; }
+
+/* The wall dial: a ring that empties as the live wall runs out, with the round
+   inside it. The arc turns amber under ten tiles and red under five, which is when
+   the hand is nearly over and the last draws matter. */
+#centre-dial { position: relative; width: var(--dial); height: var(--dial); }
+#centre-dial svg { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); }
+#centre-dial .dial-track { fill: none; stroke: rgba(255, 255, 255, 0.10); stroke-width: 8; }
+#centre-dial .dial-arc {
+  fill: none; stroke: var(--gold); stroke-width: 8; stroke-linecap: round;
+  transition: stroke-dashoffset 0.4s ease, stroke 0.4s ease;
+}
+#centre-dial.mid .dial-arc { stroke: #e8a33c; }
+#centre-dial.low .dial-arc { stroke: #e2564a; }
+#centre-head {
+  position: absolute; inset: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 1px;
+}
+#centre-wall-text { font-size: 11px; color: var(--muted); }
 
 /* ---------- tiles ---------- */
 /* A tile is a white body with a face printed on it, which is how the artwork is
@@ -338,9 +356,14 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
    gradient (no pattern to distort), so it is stretched into the landscape box
    rather than rotated — rotating a 32x43 box by 90 degrees would leave the
    column stepping in 43px jumps while the tile only looked 32px tall. */
-:root { --back-w: 34px; --back-h: 46px; }
+:root { --back-w: 40px; --back-h: 53px; }
 .backs { display: flex; gap: 2px; flex-wrap: wrap; justify-content: center; }
-.backs.vertical { flex-direction: column; align-items: center; }
+/* A side player's hand runs down the screen, and thirteen tiles at full spacing
+   need ~460px — more than a short window has for the whole ring. `--back-step` is
+   how far the next tile advances, so the hand can overlap itself the way a hand
+   actually stands when it is crowded; on a tall window the step equals the tile
+   and nothing overlaps. */
+.backs.vertical { flex-direction: column; align-items: center; gap: 0; }
 .back {
   width: var(--back-w); height: var(--back-h);
   background-image: url("/tiles/Back.svg?v=3");
@@ -348,7 +371,10 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
   border-radius: 4px;
   filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.35));
 }
-.backs.vertical .back { width: var(--back-h); height: var(--back-w); }
+.backs.vertical .back {
+  width: var(--back-h); height: var(--back-w);
+  margin: calc((var(--back-step) - var(--back-w)) / 2) 0;
+}
 
 /* ---------- hand ---------- */
 /* No panel behind the hand: the tiles sit on the felt, as they do on a table and
@@ -361,6 +387,9 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
 #hand { flex: 1; justify-content: center; gap: 4px; }
 #hand .tile { --w: 56px; --h: 75px; }
 #hand .tile.drawn { --w: 56px; --h: 75px; }
+/* A call on offer: the tiles it would take are ringed, the rest step back. */
+#hand.calling .tile:not(.hint) { filter: grayscale(0.5) brightness(0.8); }
+#hand .tile.hint { box-shadow: 0 0 0 2px var(--gold), 0 2px 4px rgba(0, 0, 0, 0.45); border-radius: 6px; }
 #hand-info { display: flex; flex-direction: column; gap: 4px; align-items: flex-end;
   font-size: 13px; color: var(--muted); min-width: 150px; }
 .flag { color: #ffb4b4; font-weight: 700; }
@@ -431,7 +460,8 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
 /* ---------- round log (secondary, collapsed by default) ---------- */
 #log-strip { grid-area: log; }
 #log-head { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
-#log-head button.mini { padding: 2px 8px; font-size: 11px; }
+#log-head button.mini { padding: 5px 10px; font-size: 12px; min-height: 24px; }
+.controls label.check input { width: 16px; height: 16px; }
 /* the shortcut help sits at the right end of the strip, just before the toggle */
 #keys-btn { margin-left: auto; }
 #log-latest {
@@ -529,15 +559,21 @@ table.rep tr.me td { color: var(--gold); }
 .navlink:hover { background: #1a5136; color: var(--ink); }
 
 /* riichi sticks on the table */
-.sticks-row { display: flex; flex-wrap: wrap; gap: 3px; min-height: 12px; align-items: center; }
+/* 供託: each 立直 costs 1000 points and the stick stays on the table until
+   somebody wins it. A stick is a long ivory bar with a dark centre dot — at 26x7
+   the row read as a stray UI widget rather than as points lying on the table, and
+   a player watching the pot is watching exactly this. */
+.sticks-row { display: flex; flex-wrap: wrap; gap: 4px; min-height: 14px; align-items: center; justify-content: center; }
 .riichi-stick {
-  width: 26px; height: 7px; border-radius: 3px;
-  background: linear-gradient(180deg, #fffdf5, #ded7c2);
-  border: 1px solid #b9b19a; position: relative;
+  width: 40px; height: 11px; border-radius: 5px;
+  background: linear-gradient(180deg, #fffdf5 0%, #f3ecd8 45%, #ddd4bd 100%);
+  border: 1px solid #a89f88; position: relative;
+  box-shadow: 0 2px 3px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 .riichi-stick::after {
   content: ""; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-  width: 4px; height: 4px; border-radius: 50%; background: #d81b1b;
+  width: 5px; height: 5px; border-radius: 50%; background: #d81b1b;
+  box-shadow: 0 0 0 1px rgba(120, 0, 0, 0.35);
 }
 .stick-more { color: var(--muted); font-size: 11px; }
 /* score deltas after a round */
@@ -749,6 +785,12 @@ body.offline #action-bar button { opacity: 0.5; }
      read once by app.js at boot, so a media query that changed it would leave the
      frames sized for the old tiles. What has to give on a short window is the
      *height* of a side hand (thirteen backs) and the observer's own hand. */
-  :root { --back-w: 28px; --back-h: 38px; }
+  :root { --back-w: 26px; --back-h: 35px; --dial: 104px; --back-step: 19px; }
+  /* A short window trims the top bar too: it is a fixed 89px, which is thirteen
+     percent of a 657px viewport and the single biggest cost above the table. */
+  #topbar { padding: 5px 12px; gap: 12px; }
+  #topbar .brand span { display: none; }
+  .controls { gap: 7px; }
+  select, button { padding: 4px 8px; font-size: 12px; }
   #hand .tile, #hand .tile.drawn { --w: 50px; --h: 67px; }
 }

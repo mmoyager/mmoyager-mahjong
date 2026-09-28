@@ -101,16 +101,23 @@
         <div class="centre-seat diamond-across" id="centre-seat-across"></div>
         <div class="centre-seat diamond-left" id="centre-seat-left"></div>
         <div id="centre-panel">
-          <div id="centre-head">
-            <span id="centre-wind">东</span>
-            <span id="centre-round"></span>
+          <!-- The wall as a ring around the round: 雀魂 draws the remaining tiles
+               as a dial that empties as the hand goes on, which reads at a glance
+               in a way a horizontal bar never did — the bar said "somewhere
+               between full and empty" without saying where. -->
+          <div id="centre-dial">
+            <svg viewBox="0 0 132 132" aria-hidden="true">
+              <circle class="dial-track" cx="66" cy="66" r="58"></circle>
+              <circle class="dial-arc" id="dial-arc" cx="66" cy="66" r="58"></circle>
+            </svg>
+            <div id="centre-head">
+              <span id="centre-wind">东</span>
+              <span id="centre-round"></span>
+              <span id="centre-wall-text"></span>
+            </div>
           </div>
           <div id="dora-tiles" class="tiles"></div>
           <div id="stick-box" class="sticks-row"></div>
-          <div id="centre-wall">
-            <span id="centre-wall-text"></span>
-            <div class="wall-bar"><i id="wall-fill"></i></div>
-          </div>
         </div>
         <div class="centre-seat diamond-right" id="centre-seat-right"></div>
         <div class="centre-seat diamond-self" id="centre-seat-self"></div>
@@ -143,7 +150,10 @@
         <span>对局记录</span>
         <!-- one line of what just happened, so the record is useful while the
              full list is collapsed -->
-        <span id="log-latest"></span>
+        <!-- The live region for screen readers: present and empty at load, one
+             line per beat (never the whole growing log), polite so it waits for a
+             pause. This is the line a player who cannot see the table hears. -->
+        <span id="log-latest" role="status" aria-live="polite" aria-label="最新动态"></span>
         <button id="keys-btn" class="mini" title="键盘与鼠标操作">快捷键</button>
         <button id="log-toggle" class="mini">展开</button>
       </div>

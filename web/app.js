@@ -521,9 +521,23 @@ function render() {
   document.getElementById("centre-round").innerHTML =
     `${view.round_number} 局<br>${view.honba} 本场`;
   const wallText = document.getElementById("centre-wall-text");
-  if (wallText) wallText.textContent = `余 ${view.wall_remaining} 张`;
-  const fill = document.getElementById("wall-fill");
-  if (fill) fill.style.width = Math.max(0, Math.min(100, (view.wall_remaining / 70) * 100)) + "%";
+  if (wallText) wallText.textContent = `余 ${view.wall_remaining}`;
+  // The dial is a ring of length 2*pi*r with r = 46, drawn from the top by the
+  // -90deg rotation on the svg. A hand is dealt with 70 live wall tiles.
+  const arc = document.getElementById("dial-arc");
+  if (arc) {
+    // Read the radius from the element so the ring geometry has one owner.
+    const radius = arc.r ? arc.r.baseVal.value : 58;
+    const circumference = 2 * Math.PI * radius;
+    const left = Math.max(0, Math.min(1, view.wall_remaining / 70));
+    arc.style.strokeDasharray = circumference;
+    arc.style.strokeDashoffset = circumference * (1 - left);
+    const dial = document.getElementById("centre-dial");
+    if (dial) {
+      dial.classList.toggle("mid", view.wall_remaining <= 10 && view.wall_remaining > 5);
+      dial.classList.toggle("low", view.wall_remaining <= 5);
+    }
+  }
   const stickBox = document.getElementById("stick-box");
   stickBox.innerHTML = "";
   for (let i = 0; i < Math.min(view.riichi_sticks, 12); i++) {
@@ -708,6 +722,21 @@ function seatName(seat) {
 /// the tags that change during a hand. 雀魂 keeps a player's wind and score with
 /// the table rather than in the corner of their own box, which also means the
 /// numbers never move as a hand grows or a meld lands.
+/// Every readout carries the same numbers, so the tooltip is where the *relative*
+/// position goes: 天鳳 shows score differences on the centre panel because "am I
+/// close to the leader" is the question a player actually has mid-hand.
+function scoreContext(p, view) {
+  const scores = view.players.map((q) => q.score);
+  const leader = Math.max(...scores);
+  const me = view.players[view.observer] ? view.players[view.observer].score : scores[0];
+  const parts = [`${p.score} 点`];
+  if (leader !== p.score) parts.push(`距一位 ${leader - p.score}`);
+  if (view.observer !== p.seat && me !== p.score) {
+    parts.push(`与${me > p.score ? "你领先 " + (me - p.score) : "你落后 " + (p.score - me)}`);
+  }
+  return parts.join(" · ");
+}
+
 function centreSeat(seat, p, view, isSelf) {
   const box = document.createElement("div");
   const acting = view.phase && view.phase.Turn && view.phase.Turn.seat === seat;
@@ -727,6 +756,7 @@ function centreSeat(seat, p, view, isSelf) {
   // The pond label carries the short name; the tooltip says which bot it is.
   name.title = isSelf ? "你" : (botNames[seat] || "");
   box.appendChild(name);
+  box.title = scoreContext(p, view);
   const score = document.createElement("span");
   score.className = "score";
   score.textContent = p.score;
@@ -1413,6 +1443,7 @@ function renderPond(frame, discards, rotDeg, seat) {
     if (i >= shown) extra += " queued";
     grid.children[r].appendChild(tileEl(d.tile, { small: true, extra }));
   });
+
 }
 
 /// The drawn tile currently on screen, so the rise-in animation runs once per
@@ -1493,11 +1524,28 @@ function renderHand(view, human) {
     send({ type: "action", action: act });
   };
 
+  // Which kinds a call on offer would actually take. 天鳳 highlights the tiles a
+  // ポン or チー can use and dims the rest, so the hand answers "what does this take
+  // from me?" without opening a preview.
+  const callKinds = new Set();
+  const acts = (state && state.decision && state.decision.actions) || [];
+  for (const a of acts) {
+    const m = a && a.Meld && a.Meld.meld;
+    if (!m) continue;
+    if (String(m.kind) === "Chi") {
+      m.tiles.slice(0, m.len).forEach((t) => callKinds.add(kindOf(t)));
+    } else if (m.tiles && m.tiles.length) {
+      callKinds.add(kindOf(m.tiles[0]));
+    }
+  }
+  handEl.classList.toggle("calling", callKinds.size > 0);
+
   hand.forEach((t) => {
     const canPlay = !locked && discardable && !!findDiscardAction(t, riichiMode);
     handEl.appendChild(tileEl(t, {
       clickable: canPlay,
       disabled: discardable && !canPlay,
+      extra: callKinds.has(kindOf(t)) ? "hint" : "",
       label: (riichiMode ? "立直并打出 " : "打出 ") + friendlyTileName(t),
       onClick: clickTile(t),
     }));
