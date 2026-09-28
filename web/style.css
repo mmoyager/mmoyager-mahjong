@@ -398,6 +398,19 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
   padding: 4px 10px 8px; min-height: 0;
 }
 #hand { flex: 1; justify-content: center; gap: 4px; }
+/* The reserved place of the drawn tile: one tile plus the gap before it. Keeping
+   it in the row means the concealed tiles do not move when a tile is drawn. */
+#hand .hand-slot {
+  flex: 0 0 auto;
+  /* Exactly the drawn tile's footprint: its width plus the gap `.tile.drawn` adds. */
+  width: calc(46px + 46px * 0.30);
+  height: 1px;
+  align-self: flex-end;
+}
+#hand .tile { --w: 46px; }
+@media (max-width: 1440px), (max-height: 900px) {
+  #hand .hand-slot { width: calc(50px + 50px * 0.30); }
+}
 #hand .tile { --w: 56px; --h: 75px; }
 #hand .tile.drawn { --w: 56px; --h: 75px; }
 /* A call on offer: the tiles it would take are ringed, the rest step back. */

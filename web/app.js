@@ -463,6 +463,10 @@ function handle(msg) {
         pendingState = msg;
         break;
       }
+      // A beat carries its own events, so one message is one redraw. Sending the
+      // events separately made the client rebuild the whole table twice per beat,
+      // which the player sees as the screen flashing.
+      if (msg.events && msg.events.length) absorbEvents(msg.events);
       state = msg;
       render();
       break;
@@ -1653,7 +1657,17 @@ function renderHand(view, human) {
     }));
   } else {
     shownDrawn = null;
+    // No tile drawn: keep its place anyway. The hand is centred as a whole, so a
+    // 14th tile used to shift all thirteen half a tile to the left on every draw —
+    // 雀魂 and 天鳳 both leave the concealed tiles where they are and put the new
+    // tile to the right of them. A non-tile spacer keeps the row's width constant
+    // (and keeps every `.tile` count, which the checks read, exactly as it was).
+    const slot = document.createElement("div");
+    slot.className = "hand-slot";
+    slot.setAttribute("aria-hidden", "true");
+    handEl.appendChild(slot);
   }
+
 
   const info = document.getElementById("shanten-info");
   if (me.shanten !== null && me.shanten !== undefined && (me.hand || []).length) {

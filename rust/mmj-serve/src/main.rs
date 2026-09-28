@@ -529,17 +529,15 @@ impl Session {
             .map(|d| serde_json::to_value(d).unwrap_or(Value::Null))
     }
 
-    /// The board as it stands, with no decision attached.
+    /// One beat: the events and the state as of their end, in a single message.
     ///
-    /// Sent with a beat's events so the client can draw the action; the decision
-    /// that action creates — a 鳴き window, the player's own turn — goes out a beat
-    /// later, after the animation. Sending both together is what made the client
-    /// responsible for holding a call window back, and no amount of client-side
-    /// patching can make that ordering reliable: by the time `submit` returns, the
-    /// engine has already opened the window.
-    fn board_message(&self) -> Value {
+    /// Two messages (events, then state) made the client redraw its whole table
+    /// twice per beat, which reads as the screen flashing. The 鳴き window opened by
+    /// a discard belongs to *that* discard's beat — the client holds its buttons
+    /// until the tile has landed, which is what "立刻出现" means in practice.
+    fn beat_message(&self, events: &[Event]) -> Value {
         let mut msg = self.state_message();
-        msg["decision"] = Value::Null;
+        msg["events"] = json!(events);
         msg
     }
 
@@ -740,19 +738,44 @@ async fn handle_socket(socket: WebSocket, checkpoints: CheckpointSource) {
     /// the events plus the board *without* the decision it creates; the decision
     /// follows after the pause, which is what stops a 鳴き window appearing before
     /// the tile that opened it has landed.
+    /// Send one batch as one or two beats, each followed by exactly one pause.
+    ///
+    /// A batch from the engine is "what one action produced": usually a discard
+    /// *and* the next player's draw, because the engine draws as part of resolving
+    /// the discard. Those are two different things to watch — but only when the
+    /// drawing player is the observer. A bot's draw is invisible (their row of backs
+    /// does not change), so giving it its own beat would put a pause in the middle
+    /// of a bot's turn with nothing happening, which is the "why did it stutter"
+    /// the player notices. The observer's own draw is a tile rising into their hand,
+    /// so it gets its own beat: 上家打出宣言牌 — 我摸的下一张牌出现.
+    macro_rules! send_beats {
+        ($s:expr, $events:expr) => {{
+            let events: Vec<Event> = $events;
+            let own_draw = events
+                .iter()
+                .position(|e| matches!(e, Event::Draw { seat, .. } if *seat == $s.human))
+                .filter(|&i| i > 0);
+            let parts: Vec<&[Event]> = match own_draw {
+                Some(i) => vec![&events[..i], &events[i..]],
+                None => vec![&events[..]],
+            };
+            for part in parts {
+                send_json!($s.beat_message(part));
+                tokio::time::sleep(std::time::Duration::from_millis($s.pace_ms)).await;
+            }
+        }};
+    }
+
     macro_rules! play_beats {
         ($s:expr) => {{
             while $s.bot_to_move() && !$s.awaiting_ack && !$s.table.finished {
                 // The table's clock: the previous action has had its beat by the
                 // time we get here, so this one may be computed.
                 let events = $s.advance();
-                if !events.is_empty() {
-                    send_json!(json!({ "type": "events", "events": events }));
+                if events.is_empty() {
+                    break;
                 }
-                send_json!($s.board_message());
-                // This beat's pause, and only then whatever it asks of the player.
-                tokio::time::sleep(std::time::Duration::from_millis($s.pace_ms)).await;
-                send_json!($s.state_message());
+                send_beats!($s, events);
             }
         }};
     }
@@ -812,11 +835,10 @@ async fn handle_socket(socket: WebSocket, checkpoints: CheckpointSource) {
                     send_json!(json!({ "type": "events", "events": events }));
                 }
                 let s = session.as_mut().unwrap();
-                send_json!(s.board_message());
+                send_json!(s.state_message());
                 // The deal is a beat of its own before anyone plays.
                 tokio::time::sleep(std::time::Duration::from_millis(s.pace_ms)).await;
                 play_beats!(s);
-                send_json!(s.state_message());
             }
             ClientMsg::Action { action } => {
                 let Some(s) = session.as_mut() else { continue };
@@ -848,13 +870,10 @@ async fn handle_socket(socket: WebSocket, checkpoints: CheckpointSource) {
                 if s.table.at_round_end() {
                     s.awaiting_ack = true;
                 }
-                if !events.is_empty() {
-                    send_json!(json!({ "type": "events", "events": events }));
-                }
-                send_json!(s.board_message());
-                // The player's own action is a beat too: the table waits for it to
-                // be animated before the next seat may draw.
-                tokio::time::sleep(std::time::Duration::from_millis(s.pace_ms)).await;
+                // The player's own action is a beat like any other, and the draw it
+                // produces for the next seat is its own beat when that seat is the
+                // player.
+                send_beats!(s, events);
                 play_beats!(s);
                 // The result of the match waits for the settlement too: sending
                 // it here would put "对局结束" on top of the last hand's panel.
@@ -866,10 +885,12 @@ async fn handle_socket(socket: WebSocket, checkpoints: CheckpointSource) {
                     }
                     send_json!(result);
                 }
-                // Always re-render, including on the final hand: the result
-                // overlay sits on top of the board, and the board behind it must
-                // show the finished round rather than the last decision.
-                send_json!(s.state_message());
+                // The board behind the final overlay is the last state the beats
+                // already sent — a second copy here would make the client rebuild
+                // the same table twice, which the player sees as a flash.
+                if s.table.finished && !s.awaiting_ack {
+                    send_json!(s.state_message());
+                }
             }
             ClientMsg::Pace { ms } => {
                 if let Some(s) = session.as_mut() {
@@ -892,11 +913,7 @@ async fn handle_socket(socket: WebSocket, checkpoints: CheckpointSource) {
                 // Deal the next hand (or end the match), then let the bots play one
                 // beat at a time.
                 let events = s.table.resume_round_end();
-                if !events.is_empty() {
-                    send_json!(json!({ "type": "events", "events": events }));
-                }
-                // The new hand is dealt and shown before the first bot plays.
-                tokio::time::sleep(std::time::Duration::from_millis(s.pace_ms)).await;
+                send_beats!(s, events);
                 play_beats!(s);
                 if s.table.finished {
                     let replay = s.save_replay();
@@ -906,7 +923,6 @@ async fn handle_socket(socket: WebSocket, checkpoints: CheckpointSource) {
                     }
                     send_json!(result);
                 }
-                send_json!(s.state_message());
             }
             ClientMsg::Hint => {
                 let Some(s) = session.as_ref() else { continue };
