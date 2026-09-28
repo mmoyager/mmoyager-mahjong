@@ -262,38 +262,40 @@ function tileEl(tile, opts = {}) {
   // fire before the next frame, and the client rebuilds every tile on every
   // state — so each beat rendered one frame of blank tile bodies. The result of
   // the probe is cached per URL, so only the first tile of each kind ever waits.
+  // NOTE: neither branch may return early. Everything below — the click handler,
+  // the ARIA label, the class list — is what makes a tile playable, and an early
+  // `return el` here shipped tiles with no handler at all: the hand drew, looked
+  // right, and could not be clicked.
   if (faceReady.has(url)) {
     face.style.backgroundImage = 'url("' + url + '")';
     el.appendChild(face);
-    return el;
-  }
-  if (faceMissing.has(url)) {
+  } else if (faceMissing.has(url)) {
     el.classList.add("no-asset");
     el.appendChild(textFace(k));
-    return el;
+  } else {
+    const probe = new Image();
+    let retried = false;
+    probe.addEventListener("load", () => {
+      faceReady.add(url);
+      face.style.backgroundImage = 'url("' + url + '")';
+    });
+    probe.addEventListener("error", () => {
+      if (!retried) {
+        // One retry past any cache: a stale entry recovers, and the tile keeps
+        // showing its body while that happens.
+        retried = true;
+        probe.src = url + "&r=" + Date.now();
+        return;
+      }
+      // Still nothing: a text face keeps the table readable.
+      faceMissing.add(url);
+      el.classList.add("no-asset");
+      face.remove();
+      el.appendChild(textFace(k));
+    });
+    probe.src = url;
+    el.appendChild(face);
   }
-  const probe = new Image();
-  let retried = false;
-  probe.addEventListener("load", () => {
-    faceReady.add(url);
-    face.style.backgroundImage = 'url("' + url + '")';
-  });
-  probe.addEventListener("error", () => {
-    if (!retried) {
-      // One retry past any cache: a stale entry recovers, and the tile keeps
-      // showing its body while that happens.
-      retried = true;
-      probe.src = url + "&r=" + Date.now();
-      return;
-    }
-    // Still nothing: a text face keeps the table readable.
-    faceMissing.add(url);
-    el.classList.add("no-asset");
-    face.remove();
-    el.appendChild(textFace(k));
-  });
-  probe.src = url;
-  el.appendChild(face);
 
   if (opts.onClick && !opts.disabled) {
     el.addEventListener("click", opts.onClick);

@@ -403,11 +403,10 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
 #hand .hand-slot {
   flex: 0 0 auto;
   /* Exactly the drawn tile's footprint: its width plus the gap `.tile.drawn` adds. */
-  width: calc(46px + 46px * 0.30);
+  width: calc(56px + 56px * 0.30);
   height: 1px;
   align-self: flex-end;
 }
-#hand .tile { --w: 46px; }
 @media (max-width: 1440px), (max-height: 900px) {
   #hand .hand-slot { width: calc(50px + 50px * 0.30); }
 }
