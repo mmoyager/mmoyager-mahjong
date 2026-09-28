@@ -537,6 +537,8 @@ function render() {
     stickBox.appendChild(more);
   }
 
+  renderCentreSeats(view, human);
+
   const doraBox = document.getElementById("dora-tiles");
   doraBox.innerHTML = "";
   view.dora_indicators.forEach((t) => doraBox.appendChild(tileEl(t, { small: true })));
@@ -701,45 +703,85 @@ function seatName(seat) {
   return kind + " " + m[2];
 }
 
-function seatHead(p, view) {
-  const head = document.createElement("div");
-  const acting = view.phase && view.phase.Turn && view.phase.Turn.seat === p.seat;
-  head.className = "seat-head"
+/// The readout for one seat, in its corner of the ring: wind, name, points, and
+/// the tags that change during a hand. 雀魂 keeps a player's wind and score with
+/// the table rather than in the corner of their own box, which also means the
+/// numbers never move as a hand grows or a meld lands.
+function centreSeat(seat, p, view, isSelf) {
+  const box = document.createElement("div");
+  const acting = view.phase && view.phase.Turn && view.phase.Turn.seat === seat;
+  box.className = "centre-seat"
+    + (isSelf ? " self" : "")
     + (p.is_dealer ? " dealer" : "")
     + (p.riichi ? " riichi" : "")
-    + (acting ? " acting" : "");
+    + (acting ? " turn" : "");
   const wind = document.createElement("span");
   wind.className = "wind";
   wind.textContent = WIND_FACE[p.wind] || "?";
-  head.appendChild(wind);
+  wind.title = `自风 ${wind.textContent}`;
+  box.appendChild(wind);
   const name = document.createElement("span");
   name.className = "name";
-  name.textContent = seatName(p.seat);
-  name.title = botNames[p.seat] || "";
-  head.appendChild(name);
-  if (p.furiten) {
-    const f = document.createElement("span");
-    f.className = "furiten";
-    f.textContent = "振听";
-    head.appendChild(f);
-  }
+  name.textContent = isSelf ? "你" : seatName(seat);
+  // The pond label carries the short name; the tooltip says which bot it is.
+  name.title = isSelf ? "你" : (botNames[seat] || "");
+  box.appendChild(name);
   const score = document.createElement("span");
   score.className = "score";
   score.textContent = p.score;
-  if (deltaScores && deltaScores[p.seat]) {
+  box.appendChild(score);
+  if (deltaScores && deltaScores[seat]) {
     const d = document.createElement("span");
-    d.className = "delta " + (deltaScores[p.seat] > 0 ? "up" : "down");
-    d.textContent = (deltaScores[p.seat] > 0 ? "+" : "") + deltaScores[p.seat];
-    score.textContent = p.score + " ";
-    score.appendChild(d);
+    d.className = "delta " + (deltaScores[seat] > 0 ? "up" : "down");
+    d.textContent = (deltaScores[seat] > 0 ? "+" : "") + deltaScores[seat];
+    box.appendChild(d);
   }
-  head.appendChild(score);
-  return head;
+  if (p.is_dealer) {
+    const t = document.createElement("span");
+    t.className = "dealer-tag";
+    t.textContent = "亲";
+    box.appendChild(t);
+  }
+  if (p.riichi) {
+    const t = document.createElement("span");
+    t.className = "riichi-tag";
+    t.textContent = "立直";
+    box.appendChild(t);
+  }
+  if (p.furiten) {
+    const t = document.createElement("span");
+    t.className = "furiten";
+    t.textContent = "振听";
+    box.appendChild(t);
+  }
+  return box;
 }
 
+/// The four seats' readouts, in the ring's corners. Rebuilt on every render because
+/// they carry the tags that change during a hand (立直, 亲, 振听) and the mark for
+/// the seat that is thinking; four small elements are cheaper to rebuild than to
+/// diff, and nothing else on screen depends on their identity.
+function renderCentreSeats(view, human) {
+  const roster = document.getElementById("seat-roster");
+  if (!roster) return;
+  roster.innerHTML = "";
+  const corner = { 0: "corner-self", 1: "corner-right", 2: "corner-across", 3: "corner-left" };
+  const idFor = { 0: "self", 1: "right", 2: "across", 3: "left" };
+  for (let seat = 0; seat < 4; seat++) {
+    const r = (seat - human + 4) % 4;
+    const box = centreSeat(seat, view.players[seat], view, seat === human);
+    box.id = "centre-seat-" + idFor[r];
+    box.classList.add(corner[r]);
+    roster.appendChild(box);
+  }
+}
+
+/// An opponent's box holds only what belongs to their own corner of the table:
+/// the row of concealed tiles and their called sets. Name, wind and points are
+/// read off the ring, and the pond below the box already names the seat, so a
+/// head here would repeat all of it.
 function renderOpponent(slot, p, view, rel) {
   slot.innerHTML = "";
-  slot.appendChild(seatHead(p, view));
 
   // `hand_count` is already the number of concealed tiles: a called set has left
   // the hand, so subtracting for melds again would show three tiles too few.
@@ -750,55 +792,23 @@ function renderOpponent(slot, p, view, rel) {
   }
 }
 
-/// The observer's own seat has no box of its own: the hand area at the bottom
-/// already shows the concealed tiles, so only the score, the wind and the melds
-/// need a place here, and the discards go into the ring like everyone else's.
+/// What only the player's own badge can say: 一発, which lasts this go-around and
+/// changes what the hand is worth right now. The wind, the points and the 立直 /
+/// 亲 / 振听 marks all live in the ring with everyone else's, so repeating them
+/// above the hand would be a second place to read the same number — and the two
+/// would disagree for as long as the settlement is animating.
 function renderSelf(slot, p, view) {
   if (!slot) return;
   slot.innerHTML = "";
+  if (!p.ippatsu) return;
   const info = document.createElement("div");
   info.className = "self-badge";
-  const wind = document.createElement("span");
-  wind.className = "wind";
-  wind.textContent = WIND_FACE[p.wind] || "?";
-  info.appendChild(wind);
-  const name = document.createElement("span");
-  name.textContent = "你";
-  info.appendChild(name);
-  if (p.is_dealer) {
-    const d = document.createElement("span");
-    d.className = "dealer-tag";
-    d.textContent = "亲";
-    info.appendChild(d);
-  }
-  if (p.riichi) {
-    const r = document.createElement("span");
-    r.className = "riichi-tag";
-    r.textContent = "立直";
-    info.appendChild(r);
-  }
-  if (p.ippatsu) {
-    // 一発 only lasts this go-around, so it is worth shouting about.
-    const i = document.createElement("span");
-    i.className = "ippatsu-tag";
-    i.textContent = "一发";
-    i.title = "一発：这一巡内和了会加一番";
-    info.appendChild(i);
-  }
-  const score = document.createElement("span");
-  score.className = "score";
-  score.textContent = p.score;
-  if (deltaScores && deltaScores[p.seat]) {
-    const d = document.createElement("span");
-    d.className = "delta " + (deltaScores[p.seat] > 0 ? "up" : "down");
-    d.textContent = (deltaScores[p.seat] > 0 ? "+" : "") + deltaScores[p.seat];
-    score.textContent = p.score + " ";
-    score.appendChild(d);
-  }
-  info.appendChild(score);
+  const i = document.createElement("span");
+  i.className = "ippatsu-tag";
+  i.textContent = "一发";
+  i.title = "一発：这一巡内和了会加一番";
+  info.appendChild(i);
   slot.appendChild(info);
-  // The observer's melds are rendered next to the hand, not here; `renderHand`
-  // owns that box so a call can never leave tiles invisible.
 }
 
 // ---------------------------------------------------------------- called sets

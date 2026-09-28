@@ -66,7 +66,12 @@ PLAY_SECONDS = 420
 # A whole 半荘 or a whole match, at the fastest beat. Every action now costs a
 # beat — including the player's own passes and draws — so these need more room
 # than they did.
-MATCH_SECONDS = 1500
+# A 半荘 driven a step at a time: the loop advances the client once per poll, so
+# the budget is really "how many steps fit", and a long hand (dealer repeats, a
+# drawn-out 南 round) runs past 1500s about half the time. 2400s leaves margin
+# without hiding a hang: a table that is stuck never advances the round counter,
+# which the check asserts separately.
+MATCH_SECONDS = 2400
 
 # --- the two probes -------------------------------------------------------
 
@@ -102,11 +107,31 @@ FIT_PROBE = r"""
             w: r ? Math.round(r.width) : 0, h: r ? Math.round(r.height) : 0,
             rot: grid ? getComputedStyle(grid).transform : null};
   });
+  // The four seat readouts hang off the ring's corners, so they must clear the
+  // ponds on the edges, the middle panel, and the action bar. Nothing else on the
+  // table is allowed to overlap either: they carry the only copy of each player's
+  // points.
+  const overlaps = (a, b) => a && b && a.x < b.x + b.w - 1 && b.x < a.x + a.w - 1
+      && a.y < b.y + b.h - 1 && b.y < a.y + a.h - 1;
+  const seats = [...document.querySelectorAll('#seat-roster .centre-seat')].map(el => {
+    const r = el.getBoundingClientRect();
+    const box = {x: Math.round(r.x), y: Math.round(r.y),
+                 w: Math.round(r.width), h: Math.round(r.height)};
+    const hits = [];
+    for (const s of ['across','left','right','self']) {
+      if (overlaps(box, rect('#pond-' + s))) hits.push('pond-' + s);
+    }
+    if (overlaps(box, rect('#centre-panel'))) hits.push('centre-panel');
+    if (overlaps(box, rect('#action-bar'))) hits.push('action-bar');
+    if (overlaps(box, rect('#hand-area'))) hits.push('hand-area');
+    return {id: el.id, box, hits};
+  });
   return JSON.stringify({
     size: [w, h],
     doc: [document.documentElement.scrollWidth, document.documentElement.scrollHeight],
     badCount: bad.length, bad: bad.slice(0, 5),
     bar: rect('#action-bar'), hand: rect('#hand-area'), buttons,
+    seats,
     handTiles: document.querySelectorAll('#hand .tile').length,
     handTile: rect('#hand .tile'),
     ponds, centre: rect('#centre-panel'), ring: rect('#ring'),
@@ -148,8 +173,9 @@ PLAY_STATUS = r"""
   hand: document.querySelectorAll('#hand .tile').length,
   ponds: ['across','left','right','self'].map(s => document.querySelectorAll('#pond-' + s + ' .tile').length),
   selfMelds: document.querySelectorAll('#melds-self .meld').length,
-  selfScore: document.querySelector('#seat-self .score')
-      ? document.querySelector('#seat-self .score').textContent : null,
+  // Points are read off the ring now, in the seat's own corner block.
+  selfScore: document.querySelector('#centre-seat-self .score')
+      ? document.querySelector('#centre-seat-self .score').textContent : null,
   oppBacks: document.querySelectorAll('.seat .backs .back').length,
   logLines: document.querySelectorAll('#log .ev').length,
   latest: document.getElementById('log-latest').textContent.slice(0, 60),
@@ -192,6 +218,13 @@ class Browser:
         self.ws = await websockets.connect(page["webSocketDebuggerUrl"], max_size=32 << 20)
         await self.call("Page.enable")
         await self.call("Runtime.enable")
+        # The profile is reused between runs, so a cached stylesheet or script can
+        # survive a rebuild: the server sends `cache-control: no-cache` but with no
+        # `ETag` the browser may still serve its own copy without asking. That made
+        # a whole run measure the previous build — a probe found no `#ring-wrap`
+        # rule at all while the served file had one.
+        await self.call("Network.enable")
+        await self.call("Network.setCacheDisabled", {"cacheDisabled": True})
         await self.call("Page.navigate", {"url": URL})
         await asyncio.sleep(3)
         return self
@@ -301,6 +334,14 @@ async def check_fit():
             if side["self"][1] >= side["self"][0] or side["across"][1] >= side["across"][0]:
                 flag = "BAD"
                 failures.append(f"{size}: self/across ponds are not horizontal: {side}")
+            if len(r["seats"]) != 4:
+                flag = "BAD"
+                failures.append(f"{size}: {len(r['seats'])} seat readouts in the ring, want 4")
+            for st in r["seats"]:
+                if st["hits"]:
+                    flag = "BAD"
+                    failures.append(f"{size}: the readout for {st['id']} covers "
+                                    f"{st['hits']} at {st['box']}")
             boxes = " ".join(f"{p['s']}={p['w']}x{p['h']}" for p in r["ponds"])
             print(f"[{flag}] {size}  doc={r['doc']} overflow={r['badCount']} "
                   f"hand={r['handTile']['w']}x{r['handTile']['h']} "
@@ -1469,12 +1510,22 @@ SEAT_STATUS = r"""
   honba: document.getElementById('honba').textContent,
   centre: document.getElementById('centre-wind').textContent,
   wall: document.getElementById('wall').textContent,
-  wind: document.querySelector('#seat-self .wind') ? document.querySelector('#seat-self .wind').textContent : null,
+  wind: (document.querySelector('#centre-seat-self .wind') || {}).textContent || null,
   selfLabel: document.getElementById('label-self').textContent,
   hand: document.querySelectorAll('#hand .tile').length,
   oppLabels: ['across','left','right'].map(s => document.getElementById('label-' + s).textContent),
-  dealerMarks: document.querySelectorAll('.seat-head.dealer').length,
-  selfDealer: !!document.querySelector('#seat-self .dealer-tag'),
+  dealerMarks: document.querySelectorAll('.centre-seat.dealer').length,
+  selfDealer: !!document.querySelector('#centre-seat-self .dealer-tag'),
+  centreScores: [0,1,2,3].map(s => {
+    // `getElementById` takes an id, not a selector: the descendant part needs
+    // `querySelector`, or every read comes back null.
+    const el = document.querySelector('#centre-seat-'
+        + ['self','right','across','left'][relativeSeat(s)] + ' .score');
+    return el ? el.textContent : null;
+  }),
+  centreBlocks: document.querySelectorAll('#seat-roster .centre-seat').length,
+  viewScores: state && state.view ? [0,1,2,3].map(s => state.view.players[s].score) : null,
+  viewDealer: state && state.view ? state.view.players[state.human].is_dealer : null,
   panel: document.getElementById('overlay').classList.contains('hidden')
       ? null : document.getElementById('overlay-title').textContent,
   ranking: document.querySelectorAll('#overlay-body table tr').length,
@@ -1508,8 +1559,24 @@ async def check_seats():
                 failures.append(f"seat {seat}: only {st['hand']} tiles in hand")
             if any("你" in x for x in st["oppLabels"]):
                 failures.append(f"seat {seat}: an opponent is labelled 你: {st['oppLabels']}")
-            if st["dealerMarks"] + (1 if st["selfDealer"] else 0) != 1:
-                failures.append(f"seat {seat}: dealer marks = {st['dealerMarks']} (+self {st['selfDealer']})")
+            # Every seat's marks now live in the one ring readout, so exactly one
+            # of the four may be the dealer — and the player's own block has to
+            # agree with the view about whether it is them.
+            if st["dealerMarks"] != 1:
+                failures.append(f"seat {seat}: {st['dealerMarks']} seats are marked 亲")
+            if st["viewDealer"] is not None and st["selfDealer"] != st["viewDealer"]:
+                failures.append(f"seat {seat}: the ring says dealer={st['selfDealer']} "
+                                f"but the view says {st['viewDealer']}")
+            # Every seat's points are read off the ring, so all four must be there
+            # and each must show that seat's real score — not a stale one left over
+            # from the previous hand.
+            if st["centreBlocks"] != 4:
+                failures.append(f"seat {seat}: {st['centreBlocks']} seat readouts in the "
+                                f"ring, so someone's points are missing")
+            shown = [int(x) for x in st["centreScores"] if x not in (None, "")]
+            if st["viewScores"] and shown != st["viewScores"]:
+                failures.append(f"seat {seat}: the ring shows {shown} but the scores are "
+                                f"{st['viewScores']}")
 
         # A full half game, which also exercises 南 rounds, dealer repeats and
         # the 撃飛 end condition. A 半荘 is up to eight hands and the table now

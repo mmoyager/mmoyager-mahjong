@@ -80,39 +80,52 @@
          Each pond is laid out in its owner's own frame and then rotated into
          place (0 / 270 / 180 / 90 degrees), so every player's discards read the
          way that player threw them, exactly as on a physical table. -->
-    <div id="ring">
-      <div class="pond-slot slot-across">
-        <div class="pond-label" id="label-across"></div>
-        <div id="pond-across" class="pond-frame"><div class="pond-grid"></div></div>
-      </div>
-      <div class="pond-slot slot-left">
-        <div class="pond-label" id="label-left"></div>
-        <div id="pond-left" class="pond-frame"><div class="pond-grid"></div></div>
-      </div>
-      <div id="centre-panel">
-        <div id="centre-wind">东</div>
-        <div id="centre-round"></div>
-        <div class="centre-block">
-          <div class="label">宝牌指示牌</div>
-          <div id="dora-tiles" class="tiles"></div>
+    <!-- `#ring` is the grid of ponds; the seat readouts hang off `#ring-wrap`, a
+         plain box with the same edges. An absolutely positioned child of a *grid*
+         container is not layout-neutral: four of them re-sized the ring's tracks,
+         stretching the centre panel from 190px to 940px wide and the ring from
+         351px to 561px tall, which pushed the hand off a 900px screen. -->
+    <div id="ring-wrap">
+      <div id="ring">
+        <div class="pond-slot slot-across">
+          <div class="pond-label" id="label-across"></div>
+          <div id="pond-across" class="pond-frame"><div class="pond-grid"></div></div>
         </div>
-        <div class="centre-block">
-          <div class="label">供托立直棒</div>
-          <div id="stick-box" class="sticks-row"></div>
+        <div class="pond-slot slot-left">
+          <div class="pond-label" id="label-left"></div>
+          <div id="pond-left" class="pond-frame"><div class="pond-grid"></div></div>
         </div>
-        <div id="centre-wall">
-          <span id="centre-wall-text"></span>
-          <div class="wall-bar"><i id="wall-fill"></i></div>
+        <div id="centre-panel">
+          <div id="centre-wind">东</div>
+          <div id="centre-round"></div>
+          <div class="centre-block">
+            <div class="label">宝牌指示牌</div>
+            <div id="dora-tiles" class="tiles"></div>
+          </div>
+          <div class="centre-block">
+            <div class="label">供托立直棒</div>
+            <div id="stick-box" class="sticks-row"></div>
+          </div>
+          <div id="centre-wall">
+            <span id="centre-wall-text"></span>
+            <div class="wall-bar"><i id="wall-fill"></i></div>
+          </div>
+        </div>
+        <div class="pond-slot slot-right">
+          <div class="pond-label" id="label-right"></div>
+          <div id="pond-right" class="pond-frame"><div class="pond-grid"></div></div>
+        </div>
+        <div class="pond-slot slot-self">
+          <div class="pond-label" id="label-self"></div>
+          <div id="pond-self" class="pond-frame"><div class="pond-grid"></div></div>
         </div>
       </div>
-      <div class="pond-slot slot-right">
-        <div class="pond-label" id="label-right"></div>
-        <div id="pond-right" class="pond-frame"><div class="pond-grid"></div></div>
-      </div>
-      <div class="pond-slot slot-self">
-        <div class="pond-label" id="label-self"></div>
-        <div id="pond-self" class="pond-frame"><div class="pond-grid"></div></div>
-      </div>
+      <!-- One readout per corner of the ring, each one step clockwise from the edge
+           its owner sits at: yours at the bottom right, then the player on your
+           right, the one across, the one on your left. 雀魂 shows each player's
+           wind and score at the table edge nearest that player; here the edges hold
+           the ponds, so the corners carry them. `renderCentreSeats` fills this. -->
+      <div id="seat-roster"></div>
     </div>
 
     <section id="action-bar"></section>

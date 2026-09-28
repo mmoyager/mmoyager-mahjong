@@ -87,27 +87,19 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
 .seat-right { grid-area: right; }
 .seat.turn { background: rgba(255, 209, 102, 0.10); box-shadow: inset 0 0 0 1px rgba(255, 209, 102, 0.5); }
 
-.seat-head { display: flex; align-items: baseline; gap: 6px; font-size: 13px; width: 100%; min-width: 0; }
-.seat-head .wind {
-  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
-  width: 22px; height: 22px; border-radius: 50%; background: #0b2b1b;
-  border: 1px solid var(--line); font-weight: 700; font-size: 12px;
-}
-.seat-head .name { color: var(--ink); font-weight: 600; font-size: 13px; overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap; }
-.seat-head .score { margin-left: auto; color: var(--gold); font-variant-numeric: tabular-nums;
-  flex: 0 0 auto; }
-.seat-head.dealer .wind { background: var(--gold); color: #2b2306; border-color: var(--gold); }
-.seat-head.riichi .name::after { content: " 立直"; color: #ff8f8f; font-weight: 700; }
-.seat-head .furiten { color: #ffb4b4; font-size: 11px; }
-.seat-head .delta { font-size: 11px; }
-.seat-head .delta.up { color: #6ee7a0; }
-.seat-head .delta.down { color: #ff9d9d; }
-.seat-head.acting .name::before { content: "▶ "; color: var(--gold); font-size: 10px; }
-
 /* ---------- the ring of discards ---------- */
+/* The wrapper carries the grid slot, and the seat readouts hang off *it* rather
+   than off the grid: an absolutely positioned child of a grid container still
+   takes part in the container's track sizing, so four of them stretched the
+   centre panel from 190px to 940px wide and the ring from 351px to 561px tall. */
+#ring-wrap { grid-area: ring; position: relative; display: block; min-height: 0; }
+#seat-roster { position: absolute; inset: 0; pointer-events: none; }
+/* Only the readouts themselves take the pointer, so the roster never covers a
+   pond or the action bar. */
+#seat-roster .centre-seat { pointer-events: auto; }
 #ring {
-  grid-area: ring; display: grid; gap: 6px; min-height: 0; align-content: center; justify-items: center;
+  display: grid; gap: 6px; min-height: 0; height: 100%;
+  align-content: center; justify-items: center;
   grid-template-columns: auto minmax(190px, 1fr) auto;
   grid-template-rows: auto auto auto;
   grid-template-areas:
@@ -164,6 +156,60 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
   background: rgba(0, 0, 0, 0.28); border: 1px solid rgba(46, 125, 85, 0.6); border-radius: 12px;
 }
 #centre-wind { font-size: 38px; font-weight: 700; color: var(--gold); line-height: 1; }
+
+/* One seat's readout: the wind it holds, who it is, and its points, in the ring
+   corner one step clockwise from that seat. Every seat gets the same shape, so
+   the table reads the same from any angle, and the seat that is thinking is lit
+   rather than moved — a readout that jumps around is harder to follow than one
+   that changes colour.
+
+   The wind sits in a disc so it is never confused with the round wind: the big
+   gold face in the middle panel is the round, these are each player's own. */
+.centre-seat {
+  position: absolute; z-index: 2;
+  display: flex; align-items: center; gap: 6px;
+  padding: 2px 8px 2px 3px; border-radius: 999px;
+  font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap;
+  background: rgba(0, 0, 0, 0.34);
+  border: 1px solid rgba(46, 125, 85, 0.55);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+/* The four corners of the grid are free — the ponds take the four edges and the
+   middle panel the centre — so each seat's readout sits in the corner one step
+   clockwise from that seat: yours bottom right, then the player on your right,
+   the one across, the one on your left. 雀魂 puts each player's wind and score at
+   the table edge nearest them; here the edges hold the ponds. */
+.corner-across { top: 0;    left: 0; }
+.corner-right  { top: 0;    right: 0; }
+.corner-left   { bottom: 0; left: 0; }
+.corner-self   { bottom: 0; right: 0; }
+.centre-seat .wind {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 50%; flex: 0 0 auto;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 12px; font-weight: 700; color: var(--muted);
+}
+/* Your own seat is the one you look at most, so it carries the strongest mark. */
+.centre-seat.self { background: rgba(46, 125, 85, 0.26); }
+.centre-seat.self .wind { background: var(--gold); color: #1b1b1b; }
+.centre-seat .name { color: var(--muted); }
+.centre-seat .score { font-weight: 700; }
+.centre-seat.dealer .wind { background: var(--gold); color: #1b1b1b; }
+.centre-seat.riichi { border-color: var(--gold); }
+.centre-seat.turn {
+  border-color: var(--gold);
+  box-shadow: 0 0 0 1px rgba(230, 190, 90, 0.55), 0 0 10px rgba(230, 190, 90, 0.25);
+}
+.centre-seat .dealer-tag, .centre-seat .riichi-tag, .centre-seat .furiten {
+  font-size: 10px; padding: 0 4px; border-radius: 4px;
+}
+.centre-seat .dealer-tag { background: var(--gold); color: #1b1b1b; }
+.centre-seat .riichi-tag { background: #c0392b; color: #fff; }
+.centre-seat .furiten { background: #555; color: #ddd; }
+/* Points won or lost this hand, beside the running total. */
+.centre-seat .delta { font-size: 11px; font-weight: 700; margin-left: 2px; }
+.centre-seat .delta.up { color: #7fd99a; }
+.centre-seat .delta.down { color: #ff8a80; }
 #centre-round { font-size: 12px; color: var(--muted); }
 .centre-block { text-align: center; }
 .centre-block .label { font-size: 11px; color: var(--muted); margin-bottom: 3px; }
@@ -419,24 +465,13 @@ table.rep tr.me td { color: var(--gold); }
 }
 .stick-more { color: var(--muted); font-size: 11px; }
 /* score deltas after a round */
-.seat-head .delta.up { color: #6ee7a0; }
-.seat-head .delta.down { color: #ff9d9d; }
-.seat-head.acting .name::before { content: "▶ "; color: var(--gold); font-size: 10px; }
 
 /* the observer's own marker sits at the left of the hand */
 #seat-self { display: flex; flex-direction: column; gap: 6px; min-width: 74px; }
-.self-badge { display: flex; align-items: center; gap: 5px; font-size: 13px; color: var(--ink); }
-.self-badge .wind {
-  display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px;
-  border-radius: 50%; background: var(--gold); color: #2b2306; font-weight: 700; font-size: 12px;
-}
-.self-badge .dealer-tag, .self-badge .riichi-tag, .self-badge .ippatsu-tag {
-  font-size: 11px; padding: 1px 6px; border-radius: 999px;
-  background: rgba(255,255,255,0.1); color: var(--muted);
-}
-.self-badge .riichi-tag { color: #ff8f8f; }
-.self-badge .ippatsu-tag { color: var(--gold); }
-.self-badge .score { margin-left: auto; color: var(--gold); font-variant-numeric: tabular-nums; }
+/* Only 一発 is left here; the wind, the points and the 立直 / 亲 / 振听 marks are
+   all in the ring with everyone else's, so nothing is stated twice. */
+.self-badge { display: flex; align-items: center; gap: 5px; font-size: 13px; }
+.self-badge .ippatsu-tag { font-size: 11px; padding: 0 4px; border-radius: 4px; color: var(--gold); }
 
 /* Keyboard focus must be visible: the whole table is playable with Tab + Enter. */
 button:focus-visible, .tile:focus-visible, a.navlink:focus-visible, select:focus-visible {
