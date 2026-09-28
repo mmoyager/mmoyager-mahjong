@@ -214,6 +214,11 @@ function tileFile(tile) {
   return suit + n + (isAka(tile) ? "-Dora" : "");
 }
 
+/// URLs whose face has been proven to load, and URLs proven not to. Cached so a
+/// re-render paints the face immediately instead of waiting a frame for a probe.
+const faceReady = new Set();
+const faceMissing = new Set();
+
 function tileEl(tile, opts = {}) {
   const k = kindOf(tile);
   const aka = isAka(tile);
@@ -250,11 +255,27 @@ function tileEl(tile, opts = {}) {
   face.className = "tile-face";
   const url = "/tiles/" + tileFile(tile) + ".svg?v=" + TILE_REVISION;
 
-  // Probe the artwork with a detached image: the tile shows its plain body
-  // until the probe succeeds, so nothing half-drawn is ever visible.
+  // The artwork is applied *synchronously* once we know it loads.
+  //
+  // Probing with a detached image is what made the whole table flash on every
+  // beat: the face is only painted from the probe's `load` event, which cannot
+  // fire before the next frame, and the client rebuilds every tile on every
+  // state — so each beat rendered one frame of blank tile bodies. The result of
+  // the probe is cached per URL, so only the first tile of each kind ever waits.
+  if (faceReady.has(url)) {
+    face.style.backgroundImage = 'url("' + url + '")';
+    el.appendChild(face);
+    return el;
+  }
+  if (faceMissing.has(url)) {
+    el.classList.add("no-asset");
+    el.appendChild(textFace(k));
+    return el;
+  }
   const probe = new Image();
   let retried = false;
   probe.addEventListener("load", () => {
+    faceReady.add(url);
     face.style.backgroundImage = 'url("' + url + '")';
   });
   probe.addEventListener("error", () => {
@@ -266,6 +287,7 @@ function tileEl(tile, opts = {}) {
       return;
     }
     // Still nothing: a text face keeps the table readable.
+    faceMissing.add(url);
     el.classList.add("no-asset");
     face.remove();
     el.appendChild(textFace(k));

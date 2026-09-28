@@ -535,9 +535,19 @@ impl Session {
     /// twice per beat, which reads as the screen flashing. The 鳴き window opened by
     /// a discard belongs to *that* discard's beat — the client holds its buttons
     /// until the tile has landed, which is what "立刻出现" means in practice.
-    fn beat_message(&self, events: &[Event]) -> Value {
+    ///
+    /// `with_decision` is false for the first half of a split beat. The decision the
+    /// engine is already holding belongs to the *end* of the beat: sending the
+    /// player's own turn with the previous discard, a beat before their drawn tile
+    /// arrives, left the client holding controls for a tile that was not there yet —
+    /// the player pressed a tile and was told to wait, and the state that finally
+    /// freed them was a second redraw.
+    fn beat_message(&self, events: &[Event], with_decision: bool) -> Value {
         let mut msg = self.state_message();
         msg["events"] = json!(events);
+        if !with_decision {
+            msg["decision"] = Value::Null;
+        }
         msg
     }
 
@@ -759,8 +769,11 @@ async fn handle_socket(socket: WebSocket, checkpoints: CheckpointSource) {
                 Some(i) => vec![&events[..i], &events[i..]],
                 None => vec![&events[..]],
             };
-            for part in parts {
-                send_json!($s.beat_message(part));
+            let last = parts.len() - 1;
+            for (i, part) in parts.iter().enumerate() {
+                // Only the beat the player can act at the end of carries the
+                // decision; anything earlier is board only.
+                send_json!($s.beat_message(part, i == last));
                 tokio::time::sleep(std::time::Duration::from_millis($s.pace_ms)).await;
             }
         }};
