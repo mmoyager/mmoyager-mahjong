@@ -565,27 +565,36 @@ TSUMO_DECLINE = r"""
 POND_LAYOUT = r"""
 (() => {
   const make = (n, riichi) => ({tile: n, tsumogiri: false, riichi: !!riichi, called_by: null});
-  // A riichi declaration tile in the middle of the row, so the spacing either side
-  // of it can be measured exactly.
-  const discards = [make(4, false), make(8, false), make(12, true), make(16, false)];
+  // Two rows, with the 立直 declaration tile inside the first one, so the row that
+  // has to make room can be compared against a row that must not move.
+  const discards = [];
+  for (let i = 0; i < 10; i++) discards.push(make((i * 4) % 34, i === 2));
   const pond = document.getElementById('pond-self');
   renderPond(pond, discards, 0, state.human);
   const grid = pond.querySelector('.pond-grid');
-  const tiles = [...grid.querySelectorAll('.tile')].map(el => {
-    const r = el.getBoundingClientRect();
-    return {rot: el.classList.contains('rot'), left: r.left, right: r.right, w: r.width};
+  const rows = [...grid.querySelectorAll('.pond-row')].map(row => {
+    const box = row.getBoundingClientRect();
+    const tiles = [...row.querySelectorAll('.tile')].map(el => {
+      const r = el.getBoundingClientRect();
+      return {rot: el.classList.contains('rot'), left: r.left, right: r.right, w: r.width};
+    });
+    return {tiles, left: box.left, w: box.width, hasSideways: tiles.some(t => t.rot)};
   });
-  const gaps = [];
-  for (let i = 1; i < tiles.length; i++) {
-    if (tiles[i].rot) gaps.push(Math.round((tiles[i].left - tiles[i - 1].right) * 10) / 10);
-    if (tiles[i - 1].rot) gaps.push(Math.round((tiles[i].left - tiles[i - 1].right) * 10) / 10);
-  }
-  const rot = tiles.find(t => t.rot);
+  const round = (x) => Math.round(x * 10) / 10;
+  // Per row: the pitch between tile edges and the clear space between them. A row
+  // with no sideways tile must stay at one plain pitch — a widened grid column
+  // used to move the same slot of every row, which is what the player noticed.
+  const steps = rows.map(r => r.tiles.slice(1).map((t, i) => round(t.left - r.tiles[i].left)));
+  const gaps = rows.map(r => r.tiles.slice(1).map((t, i) => round(t.left - r.tiles[i].right)));
+  const all = rows.flatMap(r => r.tiles);
+  const rot = all.find(t => t.rot);
   return JSON.stringify({
-    gaps, n: tiles.length,
+    n: all.length, rows: rows.length,
     rotW: rot ? Math.round(rot.w) : null,
-    plainW: Math.round(tiles.find(t => !t.rot).w),
-    cols: getComputedStyle(grid).gridTemplateColumns,
+    plainW: Math.round(all.find(t => !t.rot).w),
+    steps, gaps, sidewaysRow: rows.findIndex(r => r.hasSideways),
+    rowLeft: rows.map(r => Math.round(r.left)),
+    rowW: rows.map(r => Math.round(r.w)),
     gridW: Math.round(grid.getBoundingClientRect().width),
     frameW: Math.round(pond.getBoundingClientRect().width),
   });
@@ -655,16 +664,46 @@ async def check_riichi():
         # The pond's own layout: a sideways tile must have room, and the tiles
         # after it in the row must sit to its right rather than underneath it.
         pond = json.loads(await b.ev(POND_LAYOUT))
-        print(f"  pond row: {pond['plainW']}px upright + {pond['rotW']}px sideways, "
-              f"gaps={pond['gaps']}, cols={pond['cols']}, frame={pond['frameW']}")
+        print(f"  pond rows {pond['rows']}: {pond['plainW']}px upright + "
+              f"{pond['rotW']}px sideways, sideways row={pond['sidewaysRow']}, "
+              f"steps={pond['steps']}, gaps={pond['gaps']}, frame={pond['frameW']}")
         if pond["rotW"] is None or pond["rotW"] <= pond["plainW"]:
             failures.append(f"the sideways tile is not wider than an upright one: {pond}")
-        for gap in pond["gaps"]:
-            if gap < 1:
-                failures.append(f"the sideways tile has only {gap}px beside its neighbour")
         if pond["gridW"] > pond["frameW"]:
             failures.append(f"the pond grid ({pond['gridW']}px) is wider than its frame "
                             f"({pond['frameW']}px), so it overflows the ring")
+        # The frame is sized from arithmetic in `renderPond`; the rows are laid out
+        # by the browser. They have to agree, or the frame clips a row or leaves a
+        # gap around the pond.
+        if max(pond["rowW"]) != pond["frameW"]:
+            failures.append(f"the pond rows measure {pond['rowW']}px but the frame is "
+                            f"{pond['frameW']}px wide")
+        # Nothing in the pond may touch: every neighbour pair keeps clear space.
+        for r, gaps in enumerate(pond["gaps"]):
+            for i, gap in enumerate(gaps):
+                if gap < 1:
+                    failures.append(f"pond row {r} tiles {i} and {i + 1} touch "
+                                    f"({gap}px apart)")
+        # Only the row holding the 立直 tile may make room for it. Every other row
+        # must stay a plain run of tiles at the plain pitch: a widened grid column
+        # moved the same slot of every row, which is what the player noticed.
+        pitch = pond["plainW"] + 2
+        if pond["sidewaysRow"] < 0:
+            failures.append(f"no row holds the sideways tile: {pond}")
+        else:
+            if len(set(pond["rowLeft"])) != 1:
+                failures.append(f"the pond rows do not start at the same edge: "
+                                f"{pond['rowLeft']}")
+            for r, steps in enumerate(pond["steps"]):
+                if r == pond["sidewaysRow"]:
+                    continue
+                if any(abs(st - pitch) > 0.5 for st in steps):
+                    failures.append(f"row {r} holds no 立直 tile but its tiles are "
+                                    f"stepped {steps}, not the plain {pitch}px pitch")
+            # And the sideways tile itself has to be given room on both sides.
+            row = pond["gaps"][pond["sidewaysRow"]]
+            if not any(gap > 1.5 for gap in row):
+                failures.append(f"the sideways tile is not given any extra room: gaps {row}")
 
         # 自摸 must be declinable: a player may want to wait for a better tile.
         tsumo = {"skip": True}

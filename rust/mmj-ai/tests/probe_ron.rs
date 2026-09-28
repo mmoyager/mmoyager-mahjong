@@ -1,5 +1,5 @@
 use mmj_ai::{Agent, EfficiencyAgent};
-use mmj_core::action::{Action, ActionKind};
+use mmj_core::action::ActionKind;
 use mmj_core::hand::is_agari;
 use mmj_core::rules::Rules;
 use mmj_core::state::{Event, Table, TableConfig};

@@ -1336,16 +1336,28 @@ function renderPond(frame, discards, rotDeg, seat) {
 
   // Six to a row in the owner's frame, so the standard six-per-row pond grows
   // away from the centre. A sideways tile is `--pond-tile-h` wide while its box is
-  // `--pond-tile-w`, so the column holding one has to make room for it: with equal
-  // columns the tiles after it in the row started underneath it (the player saw
-  // them touching). Only that column grows — six columns of the wide size would
-  // not fit four ponds on a 1152-wide screen.
-  const cols = [];
-  for (let c = 0; c < 6; c++) {
-    cols.push([...sideways].some((i) => i % 6 === c) ? POND_TILE_H + 4 : POND_TILE_W);
+  // `--pond-tile-w`, and `.tile.rot` pays for the difference with a horizontal
+  // margin of `(h - w) / 2 + 2` on each side — 13px more than an upright tile.
+  //
+  // Each row is its own flex container so that this extra room stays inside the
+  // row that holds the tile. Laid out as grid columns it had to be given to the
+  // *column*, and a grid's columns are shared: every row's tile in that slot was
+  // pushed right, which the player saw as all five rows shifting. A flex row
+  // honours the tile's own margin box, so nothing else in the pond moves.
+  const SIDEWAYS_EXTRA = POND_TILE_H + 4 - POND_TILE_W;
+  const rowOf = (i) => Math.floor(i / 6);
+
+  const rowWidth = [];
+  for (let r = 0; r < rows; r++) {
+    let w = 0;
+    let count = 0;
+    for (let i = r * 6; i < Math.min(n, (r + 1) * 6); i++) {
+      w += POND_TILE_W + (sideways.has(i) ? SIDEWAYS_EXTRA : 0);
+      count++;
+    }
+    rowWidth[r] = w + Math.max(0, count - 1) * POND_GAP;
   }
-  grid.style.gridTemplateColumns = cols.map((w) => w + "px").join(" ");
-  const gridW = cols.reduce((a, b) => a + b, 0) + 5 * POND_GAP;
+  const gridW = Math.max(...rowWidth);
   const gridH = rows * POND_TILE_H + (rows - 1) * POND_GAP;
   frame.style.width = (rotated ? gridH : gridW) + "px";
   frame.style.height = (rotated ? gridW : gridH) + "px";
@@ -1358,6 +1370,12 @@ function renderPond(frame, discards, rotDeg, seat) {
   const shown = seat === undefined ? n : (visibleDiscards[seat] || 0);
 
   discards.forEach((d, i) => {
+    const r = rowOf(i);
+    if (!grid.children[r]) {
+      const row = document.createElement("div");
+      row.className = "pond-row";
+      grid.appendChild(row);
+    }
     let extra = "";
     if (d.called_by !== null && d.called_by !== undefined) extra += " called";
     if (sideways.has(i)) extra += " rot";
@@ -1375,7 +1393,7 @@ function renderPond(frame, discards, rotDeg, seat) {
     // Not played yet as far as the table is concerned: laid out, so the pond does
     // not reflow when it lands, but not visible.
     if (i >= shown) extra += " queued";
-    grid.appendChild(tileEl(d.tile, { small: true, extra }));
+    grid.children[r].appendChild(tileEl(d.tile, { small: true, extra }));
   });
 }
 

@@ -14,7 +14,7 @@
 //! * チー may only be called by the player seated to the discarder's left.
 
 use crate::action::Action;
-use crate::hand::{Counts, is_agari, is_kokushi, shanten, tenpai_kinds, winning_kinds};
+use crate::hand::{Counts, is_agari, is_kokushi, shanten, winning_kinds};
 use crate::meld::{Meld, MeldKind};
 use crate::rules::{GameLength, KuikaeScope, Rules};
 use crate::score::{ScoreResult, WinContext, Yaku, score_simple, score_win};
@@ -1429,6 +1429,38 @@ impl Table {
         self.register_kan(seat, meld, false, false);
     }
 
+    /// 搶槓成立: the 加槓 never happened, so the ポン goes back on the table.
+    ///
+    /// The added tile is now in the robber's hand. Leaving it in the meld would
+    /// put one physical tile in two places at once, and the table would show a
+    /// four-tile 槓 that was never completed. `from` is restored from
+    /// `pon_from`, because a 加槓's own `from` is the melder itself.
+    fn undo_kakan(&mut self, seat: u8, added: Tile) {
+        let p = &mut self.players[seat as usize];
+        let Some(m) = p
+            .melds
+            .iter_mut()
+            .find(|m| m.kind == MeldKind::Kakan && m.called == added)
+        else {
+            return;
+        };
+        let rest: Vec<Tile> = m
+            .tiles
+            .iter()
+            .copied()
+            .take(m.len as usize)
+            .filter(|&t| t != added)
+            .collect();
+        let (from, pon_from) = (m.from, m.pon_from);
+        if rest.len() == 3 {
+            // The identity of the tile the original ポン was called on is not
+            // recorded — only its kind and the seat it came from, and those are
+            // what the table shows (the sideways slot follows `from`). Any of
+            // the three copies therefore rebuilds the same meld on screen.
+            *m = Meld::pon([rest[0], rest[1], rest[2]], rest[0], pon_from.unwrap_or(from));
+        }
+    }
+
     /// 責任払い: record who fed the tile that completed 大三元 / 大四喜.
     ///
     /// Only called for melds taken from another player's discard, because a
@@ -2017,6 +2049,7 @@ impl Table {
                         if let Some(seat) = ron {
                             // 搶槓成立: the 加槓 never happens, so no kan dora
                             // is turned and 四槓散了 does not trigger.
+                            self.undo_kakan(from, tile);
                             let p = &self.players[seat as usize];
                             let mut h = p.hand;
                             h[kind_of(tile) as usize] += 1;
@@ -2949,6 +2982,151 @@ mod tests {
         assert_eq!(offered, nowhere, "every tenpai-preserving discard is offered");
     }
 
+    /// The whole 搶槓 path, not just the tile: who may rob, what a rob costs the
+    /// kan's declarer, and what happens when nobody robs.
+    #[test]
+    fn chankan_covers_the_whole_window() {
+        // --- a furiten player cannot rob, and a clean one can ---
+        let setup = |seed: u64| {
+            let mut t = table(seed);
+            t.players[1].melds.push(Meld::pon(
+                [tile_of(4, 1), tile_of(4, 2), tile_of(4, 3)],
+                tile_of(4, 1),
+                0,
+            ));
+            set_hand(&mut t, 1, "5m123p456p789p1z");
+            // Seat 2 waits on 5m with a 白 triplet; seat 3 is the same but furiten.
+            set_hand(&mut t, 2, "46m234p789p555z22s");
+            set_hand(&mut t, 3, "46m234p789p555z22s");
+            t.phase = Phase::Turn { seat: 1 };
+            t.refresh_decisions();
+            let kakan = t
+                .decisions()
+                .iter()
+                .find(|d| d.seat == 1)
+                .expect("seat 1 acts")
+                .actions
+                .iter()
+                .find(|a| matches!(a, Action::Meld { meld } if meld.kind == MeldKind::Kakan))
+                .copied()
+                .expect("kakan is offered");
+            t.submit(1, kakan).unwrap();
+            assert!(
+                matches!(t.phase, Phase::ChankanWindow { .. }),
+                "the 搶槓 window opens"
+            );
+            t
+        };
+
+        let t = setup(31);
+        let robbers: Vec<u8> = t
+            .decisions()
+            .iter()
+            .filter(|d| d.actions.contains(&Action::Ron))
+            .map(|d| d.seat)
+            .collect();
+        assert_eq!(robbers, vec![2, 3], "both clean seats may rob, the declarer may not");
+
+        let mut t = setup(31);
+        t.players[3].temp_furiten = true;
+        t.refresh_decisions();
+        let robbers: Vec<u8> = t
+            .decisions()
+            .iter()
+            .filter(|d| d.actions.contains(&Action::Ron))
+            .map(|d| d.seat)
+            .collect();
+        assert_eq!(robbers, vec![2], "a furiten hand cannot rob a kan");
+
+        // --- a rob means the kan never happened ---
+        // Hold the round at its end, or the next hand is dealt before the hands
+        // can be inspected.
+        t.set_pause_at_round_end(true);
+        let indicators = t.wall.revealed_indicators();
+        let kan_count = t.wall.kan_count();
+        for seat in [0u8, 2, 3] {
+            let action = if seat == 2 { Action::Ron } else { Action::Pass };
+            t.submit(seat, action).unwrap();
+        }
+        let win = t
+            .history
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                Event::Win { seat, tile, score, .. } => Some((*seat, *tile, score.clone())),
+                _ => None,
+            })
+            .expect("the rob is a win");
+        assert_eq!(win.0, 2, "the robber is the one who claimed it");
+        assert_eq!(win.1, tile_of(4, 0), "and it is the tile that was added");
+        assert!(
+            win.2.yaku.iter().any(|&(y, _)| y == crate::score::Yaku::Chankan),
+            "the win is scored as 搶槓: {:?}",
+            win.2.yaku
+        );
+        assert_eq!(win.2.aka_han, 1, "the red five is counted");
+        assert_eq!(t.wall.kan_count(), kan_count, "a robbed kan never happened");
+        assert_eq!(t.wall.revealed_indicators(), indicators, "so no kan dora is turned");
+        // The declarer lost the tile they added and got nothing back. (`drawn`
+        // still points at the tile they drew to make the kan, so the concealed
+        // count is what distinguishes a robbed kan from a completed one.)
+        assert_eq!(
+            t.players[1].hand_len(),
+            10,
+            "a robbed kan gives the declarer no replacement tile"
+        );
+        // The robber is holding the added tile, so it cannot still be sitting in
+        // the declarer's meld: the 加槓 reverts to the ポン that was on the table.
+        assert_eq!(t.players[1].melds.len(), 1);
+        assert_eq!(
+            t.players[1].melds[0].kind,
+            MeldKind::Pon,
+            "the meld reverts to a ポン: {:?}",
+            t.players[1].melds[0]
+        );
+        assert_eq!(
+            t.players[1].melds[0].len, 3,
+            "and holds three tiles, not four"
+        );
+        // The physical copy now sits nowhere on the table: it was the winner's
+        // tile and lives on the win event, with the winner's own hand staying at
+        // its thirteen concealed tiles. Before the revert it was still in the
+        // declarer's meld, i.e. counted once too many.
+        let left_behind: usize = (0..4)
+            .map(|s| {
+                let p = &t.players[s];
+                p.hand_tiles.iter().filter(|&&x| x == tile_of(4, 0)).count()
+                    + p.melds
+                        .iter()
+                        .flat_map(|m| m.tiles.iter().take(m.len as usize))
+                        .filter(|&&x| x == tile_of(4, 0))
+                        .count()
+            })
+            .sum();
+        assert_eq!(left_behind, 0, "the robbed tile is not still on the table");
+
+        // --- nobody robs: the kan completes, dora and all ---
+        let mut t = setup(32);
+        pass_others(&mut t, 1);
+        assert!(!matches!(t.phase, Phase::ChankanWindow { .. }), "the window closed");
+        assert_eq!(t.wall.kan_count(), 1, "the kan counts");
+        assert!(
+            t.wall.revealed_indicators() > 0,
+            "a kan turns a new dora indicator"
+        );
+        assert_eq!(
+            t.players[1].hand_len(),
+            11,
+            "and the declarer does draw the replacement tile"
+        );
+        assert_eq!(
+            t.players[1].melds[0].kind,
+            MeldKind::Kakan,
+            "an unrobbed 加槓 stays a 槓"
+        );
+        assert_eq!(t.players[1].melds[0].len, 4, "with all four tiles");
+    }
+
     /// 搶槓 must offer the tile that was actually added. `Meld::kan` sorts the
     /// four copies, so a 加槓 of the *red* five onto a ポン of plain ones leaves
     /// the red one first: reading `tiles[3]` would rob a plain five instead.
@@ -3680,7 +3858,7 @@ mod tests {
             c
         };
         assert!(winning_kinds(&counts, 0).is_empty());
-        assert_eq!(tenpai_kinds(&counts, 0), vec![0u8]);
+        assert_eq!(crate::hand::tenpai_kinds(&counts, 0), vec![0u8]);
         assert!(crate::hand::is_tenpai(&counts, 0));
     }
 

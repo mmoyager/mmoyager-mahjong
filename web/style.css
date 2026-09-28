@@ -130,15 +130,23 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
 .pond-frame { position: relative; }
 .pond-grid {
   position: absolute; top: 50%; left: 50%;
-  display: grid;
-  /* The column of a sideways tile has to grow: rotating a 25px tile inside a 25px
-     column makes its footprint 34px, and no margin can pull it back — it simply
-     overlaps the next column. `max-content` lets that one column take the width
-     its tile needs (its margin box) while every other column stays a tile wide,
-     and `renderPond` sizes the frame from the grid it gets. */
-  grid-template-columns: repeat(6, minmax(var(--pond-tile-w), max-content));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  /* A row of tiles is a flex line of its own (see `.pond-row`), in sixes: the
+     rows stack here and the whole block is turned into place. */
   gap: var(--pond-gap);
   transform: translate(-50%, -50%) rotate(var(--rot, 0deg));
+}
+/* Six tiles to a row, the row's own box. A sideways tile is `--pond-tile-h` wide
+   while its box is `--pond-tile-w`, so `renderPond` pushes the tiles after it
+   right with their own margin — inside this row only. Grid columns could not do
+   that: every row shares a grid's columns, so one declaration tile moved the
+   same slot of all five rows. */
+.pond-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--pond-gap);
 }
 /* Specificity matters here: `.tile.small` also sets --w/--h, and with equal
    specificity the later rule won, so the pond tiles were 27x36 while app.js
