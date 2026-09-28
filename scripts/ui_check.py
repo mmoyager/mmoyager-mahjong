@@ -82,6 +82,9 @@ FIT_PROBE = r"""
   for (const e of document.querySelectorAll('*')) {
     const r = e.getBoundingClientRect();
     if (r.width === 0 && r.height === 0) continue;
+    // Mid-animation boxes are scaled on purpose — the win banner pops to 106% —
+    // so their rect is not a layout overflow.
+    if (e.getAnimations && e.getAnimations().length) continue;
     if (r.right > w + 1 || r.left < -1 || r.bottom > h + 1) {
       bad.push({sel: e.id || (e.tagName + '.' + String(e.className).split(' ')[0]),
                 right: Math.round(r.right), bottom: Math.round(r.bottom)});
@@ -337,10 +340,16 @@ async def check_fit():
                 flag = "BAD"
                 failures.append(f"{size}: ponds are not oriented per seat: {rotations}")
             side = {p["s"]: (p["w"], p["h"]) for p in r["ponds"]}
-            if side["left"][1] <= side["left"][0] or side["right"][1] <= side["right"][0]:
+            # An empty pond (the table now advances a beat at a time, so a check can
+            # catch one before it has a full row) is one tile wide and tall: it has
+            # no orientation to check yet.
+            tiles = {p["s"]: p["tiles"] for p in r["ponds"]}
+            if tiles["left"] >= 7 and tiles["right"] >= 7 and (
+                    side["left"][1] <= side["left"][0] or side["right"][1] <= side["right"][0]):
                 flag = "BAD"
                 failures.append(f"{size}: side ponds are not vertical: {side}")
-            if side["self"][1] >= side["self"][0] or side["across"][1] >= side["across"][0]:
+            if tiles["self"] >= 7 and tiles["across"] >= 7 and (
+                    side["self"][1] >= side["self"][0] or side["across"][1] >= side["across"][0]):
                 flag = "BAD"
                 failures.append(f"{size}: self/across ponds are not horizontal: {side}")
             if r["ringHits"]:

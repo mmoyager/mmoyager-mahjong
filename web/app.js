@@ -370,6 +370,9 @@ function connect() {
   };
   socket.onopen = () => {
     setConnected(true);
+    // The table paces itself by this number: the server waits one beat between
+    // actions so its state can never be ahead of what the player has been shown.
+    tellPace();
     // The server hands every new socket a *new* game; re-ask for the one the
     // player was in. The seed is what makes it the same match rather than a
     // fresh one, so it is sent back with the request.
@@ -1150,6 +1153,15 @@ function seatOrigin(seat) {
 
 function pace() {
   return PACE_STEPS[paceIndex].ms;
+}
+
+/// Tell the server how long a beat lasts here. Sent on connect and whenever the
+/// player changes the setting; the server clamps it, so a silly value cannot turn
+/// the table back into instant-advance (or make it look hung).
+function tellPace() {
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    send({ type: "pace", ms: pace() });
+  }
 }
 
 /// Per seat, how many of its called sets are on screen.
@@ -2797,6 +2809,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("sel-pace").addEventListener("change", (ev) => {
     paceIndex = Math.max(0, Math.min(PACE_STEPS.length - 1, Number(ev.target.value) || 0));
     localStorage.setItem("mmj-pace", String(paceIndex));
+    tellPace();
   });
   const savedPace = Number(localStorage.getItem("mmj-pace"));
   if (Number.isInteger(savedPace) && savedPace >= 0 && savedPace < PACE_STEPS.length) {

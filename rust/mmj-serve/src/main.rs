@@ -370,6 +370,9 @@ struct Session {
     /// lets the client stage the ending — the ronned tile lands in the pond, the
     /// shout follows it, and only then does the panel cover the table.
     awaiting_ack: bool,
+    /// How long one beat lasts on this client: the client's animation pace, told
+    /// to us by the client itself. The table never runs ahead of it.
+    pace_ms: u64,
 }
 
 fn make_agent(
@@ -431,11 +434,31 @@ impl Session {
             human: seat,
             seed,
             awaiting_ack: false,
+            pace_ms: 1000,
         }
     }
 
     /// Let every bot act until the human must decide, the hand ends, or the
     /// match ends.
+    /// Is a bot the one who has to move? The player's own turn is not a beat —
+    /// the table waits for them however long they take.
+    fn bot_to_move(&self) -> bool {
+        self.table
+            .decisions()
+            .iter()
+            .any(|d| d.seat != self.human)
+    }
+
+    /// Play bots forward until **one** action has been taken, and return the events
+    /// it produced.
+    ///
+    /// One beat, not "until the player has something to do". The old version ran
+    /// the whole table forward in a single call and handed the client a batch
+    /// covering many turns, so the client was left animating a past that had
+    /// already happened — which is why a 立直 could be announced before its owner's
+    /// turn looked like it had arrived, and why a 鳴き window could open before the
+    /// tile it concerned was on the table. Bots that pass produce no events and are
+    /// not a beat, so the loop walks through them.
     fn advance(&mut self) -> Vec<Event> {
         let mut events = Vec::new();
         let mut guard = 0usize;
@@ -462,8 +485,14 @@ impl Session {
                 };
                 match self.table.submit(d.seat, action) {
                     Ok(ev) => {
+                        let visible = !ev.is_empty();
                         events.extend(ev);
                         acted = true;
+                        // The beat ends here: anything already in `events` is this
+                        // beat's, and the caller sends it before asking for more.
+                        if visible && !self.table.at_round_end() {
+                            return events;
+                        }
                         // The hand ended: the table is sitting on `Phase::RoundEnd`
                         // and the next round is only dealt when the player asks.
                         // (Checking the phase rather than scanning the events is
@@ -498,6 +527,20 @@ impl Session {
             .iter()
             .find(|d| d.seat == self.human)
             .map(|d| serde_json::to_value(d).unwrap_or(Value::Null))
+    }
+
+    /// The board as it stands, with no decision attached.
+    ///
+    /// Sent with a beat's events so the client can draw the action; the decision
+    /// that action creates — a 鳴き window, the player's own turn — goes out a beat
+    /// later, after the animation. Sending both together is what made the client
+    /// responsible for holding a call window back, and no amount of client-side
+    /// patching can make that ordering reliable: by the time `submit` returns, the
+    /// engine has already opened the window.
+    fn board_message(&self) -> Value {
+        let mut msg = self.state_message();
+        msg["decision"] = Value::Null;
+        msg
     }
 
     fn state_message(&self) -> Value {
@@ -668,6 +711,12 @@ enum ClientMsg {
     /// the last panel of a finished hand is dismissed. A no-op when the table is
     /// not waiting, so a stale client cannot skip anything.
     Continue,
+    /// "This is how long one beat lasts here." The client's animation pace drives
+    /// the table: the server waits this long between beats so the state can never
+    /// describe something the player has not been shown yet.
+    Pace {
+        ms: u64,
+    },
 }
 
 async fn handle_socket(socket: WebSocket, checkpoints: CheckpointSource) {
@@ -678,6 +727,32 @@ async fn handle_socket(socket: WebSocket, checkpoints: CheckpointSource) {
             let text = serde_json::to_string(&$v).unwrap_or_else(|_| "{}".to_string());
             if sender.send(Message::Text(text.into())).await.is_err() {
                 return;
+            }
+        }};
+    }
+
+    /// Play the table forward **one beat at a time**, pausing a beat between beats
+    /// so the client's animation of each action has finished before the next one is
+    /// computed.
+    ///
+    /// This is the whole point: the ordering the player sees is now the ordering the
+    /// engine took, because the engine is not allowed to run ahead. Each beat sends
+    /// the events plus the board *without* the decision it creates; the decision
+    /// follows after the pause, which is what stops a 鳴き window appearing before
+    /// the tile that opened it has landed.
+    macro_rules! play_beats {
+        ($s:expr) => {{
+            while $s.bot_to_move() && !$s.awaiting_ack && !$s.table.finished {
+                // The table's clock: the previous action has had its beat by the
+                // time we get here, so this one may be computed.
+                let events = $s.advance();
+                if !events.is_empty() {
+                    send_json!(json!({ "type": "events", "events": events }));
+                }
+                send_json!($s.board_message());
+                // This beat's pause, and only then whatever it asks of the player.
+                tokio::time::sleep(std::time::Duration::from_millis($s.pace_ms)).await;
+                send_json!($s.state_message());
             }
         }};
     }
@@ -732,12 +807,16 @@ async fn handle_socket(socket: WebSocket, checkpoints: CheckpointSource) {
                 let seed = seed.unwrap_or_else(|| rand::thread_rng().gen::<u64>());
                 let mut s = Session::new(seat, length, bot.unwrap_or_default(), seed, &checkpoints);
                 let events = s.advance();
-                let state = s.state_message();
                 session = Some(s);
                 if !events.is_empty() {
                     send_json!(json!({ "type": "events", "events": events }));
                 }
-                send_json!(state);
+                let s = session.as_mut().unwrap();
+                send_json!(s.board_message());
+                // The deal is a beat of its own before anyone plays.
+                tokio::time::sleep(std::time::Duration::from_millis(s.pace_ms)).await;
+                play_beats!(s);
+                send_json!(s.state_message());
             }
             ClientMsg::Action { action } => {
                 let Some(s) = session.as_mut() else { continue };
@@ -752,7 +831,7 @@ async fn handle_socket(socket: WebSocket, checkpoints: CheckpointSource) {
                 // saw the Win / Ryuukyoku and could not show a settlement — and
                 // the round record was missing every one of the player's own
                 // moves.
-                let mut events = match s.table.submit(s.human, action) {
+                let events = match s.table.submit(s.human, action) {
                     Ok(ev) => ev,
                     Err(e) => {
                         // The client may be showing a decision the table has
@@ -768,12 +847,15 @@ async fn handle_socket(socket: WebSocket, checkpoints: CheckpointSource) {
                 // on into the next round: see `awaiting_ack`.
                 if s.table.at_round_end() {
                     s.awaiting_ack = true;
-                } else {
-                    events.extend(s.advance());
                 }
                 if !events.is_empty() {
                     send_json!(json!({ "type": "events", "events": events }));
                 }
+                send_json!(s.board_message());
+                // The player's own action is a beat too: the table waits for it to
+                // be animated before the next seat may draw.
+                tokio::time::sleep(std::time::Duration::from_millis(s.pace_ms)).await;
+                play_beats!(s);
                 // The result of the match waits for the settlement too: sending
                 // it here would put "对局结束" on top of the last hand's panel.
                 if s.table.finished && !s.awaiting_ack {
@@ -789,6 +871,14 @@ async fn handle_socket(socket: WebSocket, checkpoints: CheckpointSource) {
                 // show the finished round rather than the last decision.
                 send_json!(s.state_message());
             }
+            ClientMsg::Pace { ms } => {
+                if let Some(s) = session.as_mut() {
+                    // Clamped: a client that asks for 0 would turn the table back
+                    // into the instant-advance it used to be, and one that asks for
+                    // a minute would look hung.
+                    s.pace_ms = ms.clamp(120, 5000);
+                }
+            }
             ClientMsg::Continue => {
                 let Some(s) = session.as_mut() else { continue };
                 if !s.awaiting_ack {
@@ -799,13 +889,15 @@ async fn handle_socket(socket: WebSocket, checkpoints: CheckpointSource) {
                     continue;
                 }
                 s.awaiting_ack = false;
-                // Deal the next hand (or end the match), then let the bots play
-                // until the player has something to decide.
-                let mut events = s.table.resume_round_end();
-                events.extend(s.advance());
+                // Deal the next hand (or end the match), then let the bots play one
+                // beat at a time.
+                let events = s.table.resume_round_end();
                 if !events.is_empty() {
                     send_json!(json!({ "type": "events", "events": events }));
                 }
+                // The new hand is dealt and shown before the first bot plays.
+                tokio::time::sleep(std::time::Duration::from_millis(s.pace_ms)).await;
+                play_beats!(s);
                 if s.table.finished {
                     let replay = s.save_replay();
                     let mut result = s.result_message();
