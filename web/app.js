@@ -2166,8 +2166,10 @@ function showRyuukyoku(r) {
   const exhaustive = r.reason === "Exhaustive";
   if (exhaustive) {
     const list = document.createElement("p");
+    // "听 / 不听" rather than ○ / ×: the marks are a Japanese convention and this
+    // panel is read in Chinese, where two characters say it outright.
     list.textContent = "听牌：" + r.tenpai
-      .map((t, i) => `${botNames[i]}${t ? " ○" : " ×"}`).join("　");
+      .map((t, i) => `${botNames[i]} ${t ? "听" : "不听"}`).join("，");
     body.appendChild(list);
   }
   const paying = r.deltas && r.deltas.some((d) => d !== 0);
