@@ -249,6 +249,16 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
    no space at all. */
 #dora-tiles { justify-content: center; }
 #dora-tiles .tile { --w: 30px; --h: 40px; }
+/* 裏ドラ sit under the dora row once a hand has been won. They keep the dora row's
+   size so the centre panel does not jump when they appear, and the row is hidden
+   rather than empty so nothing shifts while no hand has been won. */
+#ura-tiles { justify-content: center; }
+#ura-tiles.hidden { display: none; }
+#ura-tiles .tile { --w: 30px; --h: 40px; }
+#ura-tiles .tile.ura { box-shadow: 0 0 0 1px rgba(255, 209, 102, 0.45), 0 2px 4px rgba(0, 0, 0, 0.4); border-radius: 4px; }
+/* The panel's ura row: the label and the tiles on one line. */
+.settle-ura { display: flex; align-items: center; gap: 5px; margin: 4px 0; }
+.settle-ura .tile { --w: 25px; --h: 34px; }
 .sticks-row:empty { display: none; }
 
 /* The wall dial: a ring that empties as the live wall runs out, with the round

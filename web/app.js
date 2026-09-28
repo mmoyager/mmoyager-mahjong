@@ -578,6 +578,18 @@ function render() {
   const doraBox = document.getElementById("dora-tiles");
   doraBox.setAttribute("aria-label", "宝牌指示牌");
   doraBox.innerHTML = "";
+  // 裏ドラ, while the settlement is up: the tiles under the wall are flipped over
+  // on the table the moment a hand is won, and they come back with the next hand.
+  const uraBox = document.getElementById("ura-tiles");
+  if (uraBox) {
+    uraBox.innerHTML = "";
+    (shownUra || []).forEach((t) => {
+      const el = tileEl(t, { small: true, extra: "ura" });
+      el.title = `里宝牌指示牌 ${tileName(t)} → 里宝牌 ${tileName(doraFromIndicator(kindOf(t)) * 4)}`;
+      uraBox.appendChild(el);
+    });
+    uraBox.classList.toggle("hidden", !(shownUra && shownUra.length));
+  }
   view.dora_indicators.forEach((t) => {
     const el = tileEl(t, { small: true });
     const dora = doraFromIndicator(kindOf(t));
@@ -1846,9 +1858,19 @@ let lastBatch = [];
 /// it is shown when the playback reaches the beat it belongs to.
 let pendingHeadline = null;
 
+/// The 裏ドラ indicators currently face-up on the table, or null. They are part of
+/// the *event*, not the view: a view that carried them would give every client the
+/// tiles under the wall for the whole hand. Cleared when the next hand is dealt.
+let shownUra = null;
+
 function absorbEvents(events) {
   if (!events.length) return;
   lastBatch = events;
+  // 裏ドラ are revealed by the win and stay up while the settlement is read; the
+  // next hand takes them away again (see the RoundStart case below).
+  const won = events.find((e) => e.Win);
+  if (won && won.Win.ura_indicators) shownUra = won.Win.ura_indicators;
+  if (events.some((e) => e.RoundStart || e.Ryuukyoku)) shownUra = null;
   const logEl = document.getElementById("log");
   events.forEach((e) => {
     const line = describeEvent(e);
@@ -2163,6 +2185,25 @@ function showWin(w) {
     p.className = "muted";
     p.textContent = bonus.join("　");
     body.appendChild(p);
+  }
+
+  // 裏ドラ表示牌: the tiles themselves. "里宝牌 +2" tells the player the hand was
+  // worth two more han but not which tile under the wall did it, and the whole
+  // point of 報番 is being able to check the settlement. Named the same way the
+  // dora row names them, so the two read alike.
+  if (w.ura_indicators && w.ura_indicators.length) {
+    const row = document.createElement("p");
+    row.className = "settle-ura";
+    const label = document.createElement("span");
+    label.className = "muted";
+    label.textContent = "里宝牌指示牌";
+    row.appendChild(label);
+    w.ura_indicators.forEach((t) => {
+      const el = tileEl(t, { small: true });
+      el.title = `里宝牌指示牌 ${tileName(t)} → 里宝牌 ${tileName(doraFromIndicator(kindOf(t)) * 4)}`;
+      row.appendChild(el);
+    });
+    body.appendChild(row);
   }
 
   const total = document.createElement("p");

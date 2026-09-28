@@ -1043,9 +1043,16 @@ SETTLE_MATH = r"""
   panelQueue = [];
   showWin({seat: 1, from: 0, tile: 4, riichi_sticks_taken: 0, paid: 8000,
            pao_payer: null, nagashi: false, hand: [4, 8, 12], melds: [],
+           // One ura indicator per dora indicator on the table: the synthetic
+           // settlement has to agree with the live view, or the count check below
+           // would compare two different hands.
+           ura_indicators: [8],
            deltas: [-8000, 8000, 0, 0],
            score: {yaku: [["Riichi", 1]], han: 1, fu: 40, yakuman: 0, base: 1300,
-                   is_dealer: false, dora_han: 0, ura_han: 0, aka_han: 0}});
+                   is_dealer: false, dora_han: 0, ura_han: 1, aka_han: 0}});
+  const isWin = /荣和|自摸|流局满贯/.test(document.getElementById('overlay-title').textContent);
+  const ura = [document.querySelectorAll('#overlay-body .settle-ura .tile').length,
+               document.querySelectorAll('#dora-tiles .tile').length];
   const rows = [...document.querySelectorAll('#overlay-body table tr')];
   const out = [];
   for (const tr of rows) {
@@ -1056,10 +1063,20 @@ SETTLE_MATH = r"""
                 total: Number(td[2].textContent.replace(/[^0-9-]/g, ''))});
     }
   }
+  // And the other direction: a settlement with no 裏ドラ must not invent a row.
+  const withoutUra = (() => {
+    showWin({seat: 1, from: 0, tile: 4, riichi_sticks_taken: 0, paid: 8000,
+             pao_payer: null, nagashi: false, hand: [4, 8, 12], melds: [],
+             ura_indicators: [],
+             deltas: [-8000, 8000, 0, 0],
+             score: {yaku: [["Riichi", 1]], han: 1, fu: 40, yakuman: 0, base: 1300,
+                     is_dealer: false, dora_han: 0, ura_han: 0, aka_han: 0}});
+    return document.querySelectorAll('#overlay-body .settle-ura .tile').length;
+  })();
   document.getElementById('overlay').classList.add('hidden');
   state = orig;
   render();
-  return JSON.stringify({rows: out, before: saved,
+  return JSON.stringify({rows: out, before: saved, isWin, ura, withoutUra,
                          after: [25000, 32000, 25000, 18000]});
 })()"""
 
@@ -1301,6 +1318,21 @@ async def check_settle():
         if len(math["rows"]) != 4:
             failures.append(f"the settlement table has {len(math['rows'])} rows, want 4")
         else:
+            # 裏ドラ: a win flips one ura indicator per dora indicator already
+            # turned, and the panel has to show that many tiles. They travel on the
+            # win event rather than in the view (a view carrying them would hand
+            # every client the tiles under the wall for the whole hand), so a count
+            # that does not match means the reveal or the tile list went missing.
+            if math.get("isWin") and math.get("ura") is not None:
+                shown, want = math["ura"]
+                if shown != want:
+                    failures.append(f"the win panel shows {shown} 里宝牌指示牌 for "
+                                    f"{want} 宝牌指示牌")
+                else:
+                    print(f"  里宝牌 indicators in the panel: {shown} (one per dora)")
+                if math.get("withoutUra"):
+                    failures.append(f"a settlement with no 裏ドラ shows "
+                                    f"{math['withoutUra']} 里宝牌指示牌")
             for i, row in enumerate(math["rows"]):
                 want = math["after"][i]
                 if row["total"] != want:

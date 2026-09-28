@@ -623,8 +623,8 @@ fn canonical(events: &[Event]) -> String {
 fn strip_added_fields(value: &mut serde_json::Value) {
     // `pon_from` is the 加槓's record of where its ポン came from; adding it must
     // not make every replay recorded before it unverifiable.
-    const ADDED: [&str; 10] = [
-        "hand", "melds", "paid", "pao_payer", "nagashi", "next_honba",
+    const ADDED: [&str; 11] = [
+        "hand", "melds", "paid", "pao_payer", "nagashi", "next_honba", "ura_indicators",
         "dora_han", "ura_han", "aka_han", "pon_from",
     ];
     match value {

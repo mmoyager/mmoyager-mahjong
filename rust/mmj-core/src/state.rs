@@ -263,6 +263,15 @@ pub enum Event {
         /// 流し満貫 is settled at an exhaustive draw and has no winning tile.
         #[serde(default)]
         nagashi: bool,
+        /// 裏ドラ表示牌, one per revealed dora indicator. The tiles themselves, not
+        /// just the han: 報番 shows the player which tile under the wall made the
+        /// hand worth what it was, and "裏ドラ +2" alone leaves them counting.
+        ///
+        /// They ride on the win event rather than on every view because that is
+        /// the only moment they are public — a view carrying them would hand the
+        /// ura dora to every client for the whole hand.
+        #[serde(default)]
+        ura_indicators: Vec<Tile>,
     },
     Ryuukyoku {
         reason: DrawReason,
@@ -1824,6 +1833,10 @@ impl Table {
                 hand.sort_unstable();
             }
             let melds = self.players[*seat as usize].melds.clone();
+            // 裏ドラ: revealed only now, one per dora indicator already turned.
+            let ura_indicators = (0..self.wall.revealed_indicators())
+                .filter_map(|n| self.wall.ura_indicator(n))
+                .collect();
             self.push_event(Event::Win {
                 seat: *seat,
                 from: *from,
@@ -1836,6 +1849,7 @@ impl Table {
                 hand,
                 melds,
                 nagashi: false,
+                ura_indicators,
             });
         }
         let dealer_won = winners.iter().any(|(s, _, _, _)| *s == self.dealer);
@@ -1906,6 +1920,8 @@ impl Table {
                         hand: self.players[seat as usize].hand_tiles.clone(),
                         melds: self.players[seat as usize].melds.clone(),
                         nagashi: true,
+                        // 流し満貫 has no yaku table to check against, so no 裏ドラ.
+                        ura_indicators: Vec::new(),
                     });
                 }
                 // 流し満貫 replaces the tenpai settlement; it is not a win
