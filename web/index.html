@@ -68,10 +68,6 @@
     <!-- the seat opposite: name/wind/score, concealed hand, melds -->
     <section class="seat seat-across" id="seat-across"></section>
 
-    <!-- the two side seats -->
-    <section class="seat seat-left" id="seat-left"></section>
-    <section class="seat seat-right" id="seat-right"></section>
-
     <!-- The middle band is the table itself: three of the four discard ponds ring
          the centre panel, and the fourth (yours) sits at the bottom of the ring.
          Discards live here rather than in a list because that is how a real table
@@ -80,52 +76,54 @@
          Each pond is laid out in its owner's own frame and then rotated into
          place (0 / 270 / 180 / 90 degrees), so every player's discards read the
          way that player threw them, exactly as on a physical table. -->
-    <!-- `#ring` is the grid of ponds; the seat readouts hang off `#ring-wrap`, a
-         plain box with the same edges. An absolutely positioned child of a *grid*
-         container is not layout-neutral: four of them re-sized the ring's tracks,
-         stretching the centre panel from 190px to 940px wide and the ring from
-         351px to 561px tall, which pushed the hand off a 900px screen. -->
-    <div id="ring-wrap">
-      <div id="ring">
-        <div class="pond-slot slot-across">
-          <div class="pond-label" id="label-across"></div>
-          <div id="pond-across" class="pond-frame"><div class="pond-grid"></div></div>
-        </div>
-        <div class="pond-slot slot-left">
-          <div class="pond-label" id="label-left"></div>
-          <div id="pond-left" class="pond-frame"><div class="pond-grid"></div></div>
-        </div>
+    <!-- The ring of ponds. Its three columns hug their content and the whole grid
+         is centred, so the four ponds sit close around the middle the way they do
+         on a table; with a stretched middle column the side ponds drifted out to
+         the edges of the screen and left the felt empty. -->
+    <div id="ring">
+      <div class="pond-slot slot-across">
+        <div class="pond-label" id="label-across"></div>
+        <div id="pond-across" class="pond-frame"><div class="pond-grid"></div></div>
+      </div>
+      <!-- The side players' concealed hands sit inside the ring, right beside
+           their own discards: out in the table's side columns they were stranded
+           a couple of hundred pixels from the pond they belong to. -->
+      <section class="seat seat-left" id="seat-left"></section>
+      <div class="pond-slot slot-left">
+        <div class="pond-label" id="label-left"></div>
+        <div id="pond-left" class="pond-frame"><div class="pond-grid"></div></div>
+      </div>
+      <!-- The middle of the table: each seat's wind and points in the diamond
+           around the centre panel, the way 雀魂 arranges the four player panels
+           (the across player above, yours below, the side players beside). Each
+           readout is `renderCentreSeats`'s (see app.js). -->
+      <div id="centre-stack">
+        <div class="centre-seat diamond-across" id="centre-seat-across"></div>
+        <div class="centre-seat diamond-left" id="centre-seat-left"></div>
         <div id="centre-panel">
-          <div id="centre-wind">东</div>
-          <div id="centre-round"></div>
-          <div class="centre-block">
-            <div class="label">宝牌指示牌</div>
-            <div id="dora-tiles" class="tiles"></div>
+          <div id="centre-head">
+            <span id="centre-wind">东</span>
+            <span id="centre-round"></span>
           </div>
-          <div class="centre-block">
-            <div class="label">供托立直棒</div>
-            <div id="stick-box" class="sticks-row"></div>
-          </div>
+          <div id="dora-tiles" class="tiles"></div>
+          <div id="stick-box" class="sticks-row"></div>
           <div id="centre-wall">
             <span id="centre-wall-text"></span>
             <div class="wall-bar"><i id="wall-fill"></i></div>
           </div>
         </div>
-        <div class="pond-slot slot-right">
-          <div class="pond-label" id="label-right"></div>
-          <div id="pond-right" class="pond-frame"><div class="pond-grid"></div></div>
-        </div>
-        <div class="pond-slot slot-self">
-          <div class="pond-label" id="label-self"></div>
-          <div id="pond-self" class="pond-frame"><div class="pond-grid"></div></div>
-        </div>
+        <div class="centre-seat diamond-right" id="centre-seat-right"></div>
+        <div class="centre-seat diamond-self" id="centre-seat-self"></div>
       </div>
-      <!-- One readout per corner of the ring, each one step clockwise from the edge
-           its owner sits at: yours at the bottom right, then the player on your
-           right, the one across, the one on your left. 雀魂 shows each player's
-           wind and score at the table edge nearest that player; here the edges hold
-           the ponds, so the corners carry them. `renderCentreSeats` fills this. -->
-      <div id="seat-roster"></div>
+      <div class="pond-slot slot-right">
+        <div class="pond-label" id="label-right"></div>
+        <div id="pond-right" class="pond-frame"><div class="pond-grid"></div></div>
+      </div>
+      <section class="seat seat-right" id="seat-right"></section>
+      <div class="pond-slot slot-self">
+        <div class="pond-label" id="label-self"></div>
+        <div id="pond-self" class="pond-frame"><div class="pond-grid"></div></div>
+      </div>
     </div>
 
     <section id="action-bar"></section>

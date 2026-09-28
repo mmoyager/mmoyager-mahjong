@@ -15,8 +15,8 @@
 
   /* Pond tile geometry. app.js reads these to size each pond's rotated frame,
      so the tile size has exactly one source of truth. */
-  --pond-tile-w: 25px;
-  --pond-tile-h: 34px;
+  --pond-tile-w: 32px;
+  --pond-tile-h: 43px;
   --pond-gap: 2px;
 }
 
@@ -67,45 +67,65 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
 /* ---------- table ---------- */
 #table {
   position: relative; flex: 1; display: grid; gap: 8px; padding: 10px 12px;
-  grid-template-columns: minmax(96px, 150px) 1fr minmax(96px, 150px);
+  grid-template-columns: 1fr;
   grid-template-rows: auto 1fr auto auto auto;
   grid-template-areas:
-    "across across across"
-    "left   ring   right"
-    "acts   acts   acts"
-    "hand   hand   hand"
-    "log    log    log";
-  background: radial-gradient(circle at 50% 45%, #146b41 0%, var(--felt) 58%, var(--felt-dark) 100%);
+    "across"
+    "ring"
+    "acts"
+    "hand"
+    "log";
+  background:
+    radial-gradient(circle at 50% 46%, rgba(255, 255, 255, 0.07) 0%, rgba(255, 255, 255, 0) 42%),
+    radial-gradient(circle at 50% 45%, #146b41 0%, var(--felt) 58%, var(--felt-dark) 100%);
+  box-shadow: inset 0 0 90px rgba(0, 0, 0, 0.35);
   min-height: 0;
 }
 
-.seat { background: rgba(0, 0, 0, 0.16); border: 1px solid rgba(255, 255, 255, 0.06);
-  border-radius: 10px; padding: 6px 8px; display: flex; flex-direction: column; gap: 5px;
+/* A seat is a place to put that player's tiles, not a panel: the box hugs them
+   (`align-self: center`) rather than stretching down the whole row, which left a
+   tall empty rounded rectangle beside every pond. */
+.seat { background: none; border: none; border-radius: 10px; padding: 0 6px;
+  display: flex; flex-direction: column; gap: 5px; align-items: center;
   transition: box-shadow 0.2s ease, background 0.2s ease; min-width: 0; }
-.seat-across { grid-area: across; align-items: center; }
-.seat-left { grid-area: left; }
-.seat-right { grid-area: right; }
-.seat.turn { background: rgba(255, 209, 102, 0.10); box-shadow: inset 0 0 0 1px rgba(255, 209, 102, 0.5); }
+.seat-across { grid-area: across; }
+.seat-left { grid-area: lseat; align-self: center; align-items: flex-end; }
+.seat-right { grid-area: rseat; align-self: center; align-items: flex-start; }
+/* Whose turn it is: the box is gone, so the highlight rides the tiles. */
+.seat.turn .back { filter: drop-shadow(0 0 5px rgba(255, 209, 102, 0.85)); }
+.seat.turn { background: rgba(255, 209, 102, 0.07); box-shadow: inset 0 0 0 1px rgba(255, 209, 102, 0.28); }
 
 /* ---------- the ring of discards ---------- */
-/* The wrapper carries the grid slot, and the seat readouts hang off *it* rather
-   than off the grid: an absolutely positioned child of a grid container still
-   takes part in the container's track sizing, so four of them stretched the
-   centre panel from 190px to 940px wide and the ring from 351px to 561px tall. */
-#ring-wrap { grid-area: ring; position: relative; display: block; min-height: 0; }
-#seat-roster { position: absolute; inset: 0; pointer-events: none; }
-/* Only the readouts themselves take the pointer, so the roster never covers a
-   pond or the action bar. */
-#seat-roster .centre-seat { pointer-events: auto; }
-#ring {
-  display: grid; gap: 6px; min-height: 0; height: 100%;
-  align-content: center; justify-items: center;
-  grid-template-columns: auto minmax(190px, 1fr) auto;
+/* The middle of the table: the centre panel with one seat readout on each edge.
+   The readouts are ordinary grid items, not absolutely positioned ones: an
+   absolutely positioned child of a grid container takes part in that container's
+   track sizing, and four of them once stretched the centre panel from 190px to
+   940px wide and the ring from 351px to 561px tall. */
+#centre-stack {
+  grid-area: centre;
+  display: grid; gap: 5px 10px; place-items: center;
+  grid-template-columns: auto auto auto;
   grid-template-rows: auto auto auto;
   grid-template-areas:
     ".    across ."
     "left centre right"
     ".    self   .";
+}
+/* Three columns that hug their content, centred in the table, so the four ponds
+   cluster around the middle. With a stretched middle column the side ponds drifted
+   to the screen edges and left the felt empty. */
+#ring {
+  grid-area: ring;
+  display: grid; gap: 8px 16px; min-height: 0;
+  align-content: center; justify-content: center; justify-items: center;
+  grid-template-columns: auto auto auto auto auto;
+  grid-template-rows: auto auto auto;
+  /* The side players' hands flank their own ponds (lseat / rseat), so every pond
+     sits next to the tiles of the player who threw them. */
+  grid-template-areas:
+    ".       .      across  .       ."
+    "lseat   left   centre  right   rseat"
+    ".       .      self    .       .";
 }
 .pond-slot { display: flex; flex-direction: column; gap: 2px; }
 .slot-across { grid-area: across; align-items: flex-start; }
@@ -151,11 +171,16 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
 .pond-grid .tile.called { --tg-op: 0.42; opacity: 0.42; }
 
 #centre-panel {
-  grid-area: centre; display: flex; flex-direction: column; align-items: center; gap: 6px;
-  padding: 10px 16px; min-width: 190px;
-  background: rgba(0, 0, 0, 0.28); border: 1px solid rgba(46, 125, 85, 0.6); border-radius: 12px;
+  grid-area: centre;
+  display: flex; flex-direction: column; align-items: center; gap: 7px;
+  padding: 15px 22px 12px; min-width: 198px;
+  background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(46, 125, 85, 0.55); border-radius: 14px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
-#centre-wind { font-size: 38px; font-weight: 700; color: var(--gold); line-height: 1; }
+/* The round reads as one line — a big wind with the hand beside it, 東1局 — rather
+   than a wind with a caption underneath. */
+#centre-head { display: flex; align-items: center; gap: 7px; }
+#centre-wind { font-size: 40px; font-weight: 700; color: var(--gold); line-height: 1; }
 
 /* One seat's readout: the wind it holds, who it is, and its points, in the ring
    corner one step clockwise from that seat. Every seat gets the same shape, so
@@ -166,10 +191,9 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
    The wind sits in a disc so it is never confused with the round wind: the big
    gold face in the middle panel is the round, these are each player's own. */
 .centre-seat {
-  position: absolute; z-index: 2;
   display: flex; align-items: center; gap: 6px;
-  padding: 2px 8px 2px 3px; border-radius: 999px;
-  font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap;
+  padding: 3px 10px 3px 4px; border-radius: 999px;
+  font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap;
   background: rgba(0, 0, 0, 0.34);
   border: 1px solid rgba(46, 125, 85, 0.55);
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
@@ -179,21 +203,26 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
    clockwise from that seat: yours bottom right, then the player on your right,
    the one across, the one on your left. 雀魂 puts each player's wind and score at
    the table edge nearest them; here the edges hold the ponds. */
-.corner-across { top: 0;    left: 0; }
-.corner-right  { top: 0;    right: 0; }
-.corner-left   { bottom: 0; left: 0; }
-.corner-self   { bottom: 0; right: 0; }
+/* Each readout sits on its owner's side of the centre panel: the across player
+   above it, yours below, the two side players beside it. That is how 雀魂 arranges
+   the four player panels, and it is the one placement where every readout touches
+   the side of the table its owner is sitting at — in the screen's corners they
+   floated away from the ponds they belong to. */
+.diamond-across { grid-area: across; }
+.diamond-left   { grid-area: left; }
+.diamond-right  { grid-area: right; }
+.diamond-self   { grid-area: self; }
 .centre-seat .wind {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 20px; height: 20px; border-radius: 50%; flex: 0 0 auto;
+  width: 22px; height: 22px; border-radius: 50%; flex: 0 0 auto;
   background: rgba(255, 255, 255, 0.1);
-  font-size: 12px; font-weight: 700; color: var(--muted);
+  font-size: 13px; font-weight: 700; color: var(--muted);
 }
 /* Your own seat is the one you look at most, so it carries the strongest mark. */
 .centre-seat.self { background: rgba(46, 125, 85, 0.26); }
 .centre-seat.self .wind { background: var(--gold); color: #1b1b1b; }
 .centre-seat .name { color: var(--muted); }
-.centre-seat .score { font-weight: 700; }
+.centre-seat .score { font-weight: 800; font-size: 14px; }
 .centre-seat.dealer .wind { background: var(--gold); color: #1b1b1b; }
 .centre-seat.riichi { border-color: var(--gold); }
 .centre-seat.turn {
@@ -213,10 +242,14 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
 #centre-round { font-size: 12px; color: var(--muted); }
 .centre-block { text-align: center; }
 .centre-block .label { font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+/* 雀魂 shows the dora indicators bare: the tiles say what they are, and a caption
+   over them only pushed the round wind off centre. An empty riichi-stick row takes
+   no space at all. */
 #dora-tiles { justify-content: center; }
-#dora-tiles .tile { --w: 24px; --h: 33px; }
+#dora-tiles .tile { --w: 30px; --h: 40px; }
+.sticks-row:empty { display: none; }
 #centre-wall { width: 100%; text-align: center; font-size: 11px; color: var(--muted); }
-.wall-bar { margin-top: 4px; height: 5px; border-radius: 3px; background: rgba(255,255,255,0.12); overflow: hidden; }
+.wall-bar { margin-top: 5px; height: 4px; border-radius: 2px; background: rgba(255,255,255,0.12); overflow: hidden; }
 .wall-bar i { display: block; height: 100%; width: 100%; background: var(--gold); transition: width 0.3s ease; }
 
 /* ---------- tiles ---------- */
@@ -292,21 +325,42 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
    loses only the printed face, because which tile it is stays public knowledge. */
 .tile.down { background-image: url("/tiles/Back.svg?v=2"); }
 
-/* opponents' tiles, face down */
-.backs { display: flex; gap: 1px; flex-wrap: wrap; justify-content: center; }
+/* ---------- opponents' concealed tiles ---------- */
+/* Sized like real tiles: at 15x20 they read as a dashed line rather than as
+   thirteen tile backs, which is what the first pass looked like on screen. They
+   are deliberately a little smaller than the observer's own hand — 雀魂 draws
+   your tiles largest and everyone else's a step down — and they overlap by a
+   hair, the way a hand does when it is stood on edge.
+
+   A side player's hand is a column, and each of their tiles is *landscape* from
+   here: the tile is upright in their own frame, so looking at it edge-on makes
+   it wider than it is tall. The back art is a plain rounded body with a vertical
+   gradient (no pattern to distort), so it is stretched into the landscape box
+   rather than rotated — rotating a 32x43 box by 90 degrees would leave the
+   column stepping in 43px jumps while the tile only looked 32px tall. */
+:root { --back-w: 34px; --back-h: 46px; }
+.backs { display: flex; gap: 2px; flex-wrap: wrap; justify-content: center; }
 .backs.vertical { flex-direction: column; align-items: center; }
-.back { width: 15px; height: 20px; background-image: url("/tiles/Back.svg?v=2");
-  background-size: 100% 100%; filter: drop-shadow(0 1px 1px rgba(0,0,0,0.4)); }
-.backs.vertical .back { width: 20px; height: 15px; transform: rotate(90deg); }
+.back {
+  width: var(--back-w); height: var(--back-h);
+  background-image: url("/tiles/Back.svg?v=3");
+  background-size: 100% 100%; background-repeat: no-repeat;
+  border-radius: 4px;
+  filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.35));
+}
+.backs.vertical .back { width: var(--back-h); height: var(--back-w); }
 
 /* ---------- hand ---------- */
+/* No panel behind the hand: the tiles sit on the felt, as they do on a table and
+   in 雀魂. A dark rounded box around them only made the empty half of the row
+   look like a hole in the layout. */
 #hand-area {
   grid-area: hand; display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap;
-  background: rgba(0, 0, 0, 0.22); border-radius: 12px; padding: 10px 14px; min-height: 0;
+  padding: 4px 10px 8px; min-height: 0;
 }
 #hand { flex: 1; justify-content: center; gap: 4px; }
-#hand .tile { --w: 46px; --h: 62px; }
-#hand .tile.drawn { --w: 46px; --h: 62px; }
+#hand .tile { --w: 56px; --h: 75px; }
+#hand .tile.drawn { --w: 56px; --h: 75px; }
 #hand-info { display: flex; flex-direction: column; gap: 4px; align-items: flex-end;
   font-size: 13px; color: var(--muted); min-width: 150px; }
 .flag { color: #ffb4b4; font-weight: 700; }
@@ -344,13 +398,35 @@ button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f;
   display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; min-height: 0;
 }
 #action-bar:empty { display: none; }
+/* Big, colour-coded buttons, the way 雀魂 stacks them next to your hand: a call
+   (吃 / 碰 / 槓) is blue, a win is gold, 立直 is red, and スキップ stays quiet.
+   The default button look was small and dark enough to disappear into the felt,
+   which is the one place on the table where that is not acceptable. */
 #action-bar button {
-  padding: 9px 20px; font-size: 15px; font-weight: 700; min-width: 84px;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45);
+  height: 46px; padding: 0 22px; font-size: 17px; font-weight: 700; min-width: 96px;
+  border-radius: 11px;
+  background: linear-gradient(#2b6d4a, #1d5236);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
-#action-bar button.pass { background: #17402c; color: var(--muted); }
-#action-bar .riichi-toggle.on { background: #ff8f8f; color: #33110f; border-color: #ff8f8f; }
-#action-bar button.primary { background: var(--gold); color: #26210a; border-color: #e0b64f; }
+#action-bar button:hover { filter: brightness(1.12); }
+#action-bar button.call {
+  background: linear-gradient(#37799c, #225a78); border-color: rgba(255, 255, 255, 0.2);
+}
+#action-bar button.pass {
+  background: linear-gradient(#2c4237, #1e3028); color: var(--muted);
+  border-color: rgba(255, 255, 255, 0.1); min-width: 84px;
+}
+#action-bar button.primary {
+  background: linear-gradient(#ffd875, #e2ac34); color: #2a2005;
+  border-color: #f0cf7a; min-width: 104px;
+}
+#action-bar .riichi-toggle.on {
+  background: linear-gradient(#ef6a5c, #c4392b); color: #fff; border-color: #f08a7e;
+}
+/* The tile being offered, drawn as a tile beside the buttons. */
+#action-bar .call-hint { display: inline-flex; align-items: center; gap: 6px; }
+#action-bar .call-hint .tile.hint-tile { --w: 26px; --h: 35px; }
 
 /* ---------- round log (secondary, collapsed by default) ---------- */
 #log-strip { grid-area: log; }
@@ -660,4 +736,19 @@ body.offline #action-bar button { opacity: 0.5; }
 @media (prefers-reduced-motion: reduce) {
   .pond-grid .tile.flying, #hand .tile.drawn.auto-target, #hand .tile.drawn.draw-in,
   .tile.callable, .melds .meld.landing { animation: none; }
+}
+
+/* ---------- smaller windows ---------- */
+/* A short or narrow window steps every piece down one size, the way 雀魂 scales
+   its table. The tallest thing on the felt is a side player's hand — thirteen
+   backs at `--back-w` plus the gap, 466px at the full size — and with the ponds
+   and the observer's own hand at full size the ring grew past its row and put the
+   action bar behind the seat readouts on a 1152x720 window. */
+@media (max-width: 1280px), (max-height: 800px) {
+  /* Only the two things `renderPond` does not size itself: the pond geometry is
+     read once by app.js at boot, so a media query that changed it would leave the
+     frames sized for the old tiles. What has to give on a short window is the
+     *height* of a side hand (thirteen backs) and the observer's own hand. */
+  :root { --back-w: 28px; --back-h: 38px; }
+  #hand .tile, #hand .tile.drawn { --w: 50px; --h: 67px; }
 }

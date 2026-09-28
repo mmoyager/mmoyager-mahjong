@@ -107,13 +107,12 @@ FIT_PROBE = r"""
             w: r ? Math.round(r.width) : 0, h: r ? Math.round(r.height) : 0,
             rot: grid ? getComputedStyle(grid).transform : null};
   });
-  // The four seat readouts hang off the ring's corners, so they must clear the
-  // ponds on the edges, the middle panel, and the action bar. Nothing else on the
-  // table is allowed to overlap either: they carry the only copy of each player's
-  // points.
+  // The four seat readouts sit in the diamond around the centre panel, so they
+  // must clear the ponds, the panel itself, the action bar and the hand. Nothing
+  // may overlap them either: they carry the only copy of each player's points.
   const overlaps = (a, b) => a && b && a.x < b.x + b.w - 1 && b.x < a.x + a.w - 1
       && a.y < b.y + b.h - 1 && b.y < a.y + a.h - 1;
-  const seats = [...document.querySelectorAll('#seat-roster .centre-seat')].map(el => {
+  const seats = [...document.querySelectorAll('#centre-stack .centre-seat')].map(el => {
     const r = el.getBoundingClientRect();
     const box = {x: Math.round(r.x), y: Math.round(r.y),
                  w: Math.round(r.width), h: Math.round(r.height)};
@@ -1558,7 +1557,7 @@ SEAT_STATUS = r"""
         + ['self','right','across','left'][relativeSeat(s)] + ' .score');
     return el ? el.textContent : null;
   }),
-  centreBlocks: document.querySelectorAll('#seat-roster .centre-seat').length,
+  centreBlocks: document.querySelectorAll('#centre-stack .centre-seat').length,
   viewScores: state && state.view ? [0,1,2,3].map(s => state.view.players[s].score) : null,
   viewDealer: state && state.view ? state.view.players[state.human].is_dealer : null,
   panel: document.getElementById('overlay').classList.contains('hidden')

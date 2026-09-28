@@ -517,8 +517,9 @@ function render() {
   document.getElementById("sticks").textContent = "供托 " + view.riichi_sticks;
   document.getElementById("wall").textContent = "余 " + view.wall_remaining;
   document.getElementById("centre-wind").textContent = ROUND_WIND_FACE[view.round_wind] || "?";
-  document.getElementById("centre-round").textContent =
-    `${view.round_number} 局 · ${view.honba} 本场`;
+  // One line beside the wind, 雀魂 style: 東1局 with the honba under it.
+  document.getElementById("centre-round").innerHTML =
+    `${view.round_number} 局<br>${view.honba} 本场`;
   const wallText = document.getElementById("centre-wall-text");
   if (wallText) wallText.textContent = `余 ${view.wall_remaining} 张`;
   const fill = document.getElementById("wall-fill");
@@ -762,17 +763,24 @@ function centreSeat(seat, p, view, isSelf) {
 /// the seat that is thinking; four small elements are cheaper to rebuild than to
 /// diff, and nothing else on screen depends on their identity.
 function renderCentreSeats(view, human) {
-  const roster = document.getElementById("seat-roster");
-  if (!roster) return;
-  roster.innerHTML = "";
-  const corner = { 0: "corner-self", 1: "corner-right", 2: "corner-across", 3: "corner-left" };
+  const stack = document.getElementById("centre-stack");
+  if (!stack) return;
   const idFor = { 0: "self", 1: "right", 2: "across", 3: "left" };
+  const diamond = { 0: "diamond-self", 1: "diamond-right", 2: "diamond-across", 3: "diamond-left" };
   for (let seat = 0; seat < 4; seat++) {
     const r = (seat - human + 4) % 4;
-    const box = centreSeat(seat, view.players[seat], view, seat === human);
-    box.id = "centre-seat-" + idFor[r];
-    box.classList.add(corner[r]);
-    roster.appendChild(box);
+    // The blocks are fixed markup inside `#centre-stack` (their grid areas place
+    // them, and the centre panel sits among them), so each render fills its own
+    // block instead of rebuilding the stack.
+    const holder = document.getElementById("centre-seat-" + idFor[r]);
+    if (!holder) continue;
+    const fresh = centreSeat(seat, view.players[seat], view, seat === human);
+    // Keep the placement class and copy the state classes (self / dealer /
+    // riichi / turn) the readout decided on.
+    holder.className = "centre-seat " + diamond[r]
+      + fresh.className.replace("centre-seat", "");
+    holder.innerHTML = fresh.innerHTML;
+    holder.title = fresh.title;
   }
 }
 
@@ -1682,13 +1690,15 @@ function renderActions() {
     bar.appendChild(b);
   };
 
-  // Name the tile and its owner next to the buttons: "可鸣：AI 2 打出的 5m".
+  // What is on offer, next to the buttons: 雀魂 puts the called tile itself there,
+  // which names the tile faster than reading it does.
   const target = callTarget();
   if (target && target.seat !== null && target.seat !== undefined && target.seat !== state.human) {
     const hint = document.createElement("span");
     hint.className = "call-hint";
     hint.textContent = (target.kan ? "可抢杠：" : "可鸣：") + who(target.seat)
-      + (target.kan ? " 加杠的 " : " 打出的 ") + friendlyTileName(target.tile);
+      + (target.kan ? " 加杠的" : " 打出的");
+    hint.appendChild(tileEl(target.tile, { small: true, extra: " hint-tile" }));
     bar.appendChild(hint);
   }
 
@@ -1724,14 +1734,14 @@ function renderActions() {
 
   acts.forEach((a) => {
     const k = actKind(a);
-    if (k === "Pon") add("碰", a);
-    if (k === "Minkan") add("大明杠", a);
-    if (k === "Ankan") add("暗杠 " + friendlyTileName(a.Meld.meld.tiles[0]), a);
-    if (k === "Kakan") add("加杠 " + friendlyTileName(a.Meld.meld.tiles[0]), a);
+    if (k === "Pon") add("碰", a, false, "call");
+    if (k === "Minkan") add("大明杠", a, false, "call");
+    if (k === "Ankan") add("暗杠 " + friendlyTileName(a.Meld.meld.tiles[0]), a, false, "call");
+    if (k === "Kakan") add("加杠 " + friendlyTileName(a.Meld.meld.tiles[0]), a, false, "call");
     if (k === "Chi") {
       const m = a.Meld.meld;
       const names = m.tiles.slice(0, m.len).map(friendlyTileName).join("");
-      add("吃 " + names, a);
+      add("吃 " + names, a, false, "call");
     }
   });
 
